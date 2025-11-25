@@ -117,6 +117,14 @@
         "need_admin": false
       },
       {
+        "name": "分析单个声骸",
+        "desc": "分析单个声骸",
+        "eg": "分析土豆1c",
+        "need_ck": true,
+        "need_sk": false,
+        "need_admin": false
+      },
+      {
         "name": "查询角色面板",
         "desc": "查询角色面板",
         "eg": "椿面板",
@@ -205,17 +213,17 @@
         "need_admin": false
       },
       {
-        "name": "星声统计",
-        "desc": "星声",
-        "eg": "星声(5月/2.3版本)",
+        "name": "打牌",
+        "desc": "打牌",
+        "eg": "poker",
         "need_ck": true,
         "need_sk": false,
         "need_admin": false
       },
       {
-        "name": "打牌",
-        "desc": "打牌",
-        "eg": "poker",
+        "name": "星声统计",
+        "desc": "星声",
+        "eg": "星声(5月/2.3版本)",
         "need_ck": true,
         "need_sk": false,
         "need_admin": false
@@ -319,9 +327,25 @@
         "need_admin": false
       },
       {
-        "name": "练度总排行",
-        "desc": "练度总排行",
-        "eg": "练度总排行",
+        "name": "无尽排行",
+        "desc": "无尽排行",
+        "eg": "无尽排行",
+        "need_ck": false,
+        "need_sk": false,
+        "need_admin": false
+      },
+      {
+        "name": "无尽bot排行",
+        "desc": "无尽bot排行",
+        "eg": "无尽bot排行",
+        "need_ck": false,
+        "need_sk": false,
+        "need_admin": false
+      },
+      {
+        "name": "无尽总排行",
+        "desc": "无尽总排行",
+        "eg": "无尽总排行",
         "need_ck": false,
         "need_sk": false,
         "need_admin": false
@@ -530,6 +554,56 @@
       }
     ]
   },
+  "签到功能": {
+    "desc": "库街区签到",
+    "data": [
+      {
+        "name": "签到",
+        "desc": "签到",
+        "eg": "签到",
+        "need_ck": false,
+        "need_sk": false,
+        "need_admin": false
+      },
+      {
+        "name": "开启自动签到",
+        "desc": "开启自动签到",
+        "eg": "开启自动签到",
+        "need_ck": false,
+        "need_sk": false,
+        "need_admin": false
+      }
+    ]
+  },
+  "机器人拉群": {
+    "desc": "机器人拉群",
+    "data": [
+       {
+        "name": "会员帮助",
+        "desc": "会员帮助",
+        "eg": "会员帮助",
+        "need_ck": false,
+        "need_sk": false,
+        "need_admin": false
+      },
+      {
+        "name": "查询到期时间",
+        "desc": "查询到期时间",
+        "eg": "到期",
+        "need_ck": false,
+        "need_sk": false,
+        "need_admin": false
+      },
+      {
+        "name": "拉群或续费",
+        "desc": "拉群或续费",
+        "eg": "续费",
+        "need_ck": false,
+        "need_sk": false,
+        "need_admin": false
+      }
+    ]
+  },
   "bot主人功能": {
     "pm": 1,
     "desc": "bot主人功能",
@@ -570,14 +644,6 @@
         "name": "联系主人",
         "desc": "联系主人",
         "eg": "联系主人",
-        "need_ck": false,
-        "need_sk": false,
-        "need_admin": true
-      },
-      {
-        "name": "添加/删除角色别名",
-        "desc": "添加/删除角色别名",
-        "eg": "添加油壶别名杂鱼",
         "need_ck": false,
         "need_sk": false,
         "need_admin": true

@@ -1,30 +1,30 @@
+import asyncio
+import logging
 from pathlib import Path
 from typing import Union
 
 from PIL import Image, ImageDraw
-
 from gsuid_core.models import Event
 from gsuid_core.utils.image.convert import convert_img
 
-from ..utils.api.model import (
-    AccountBaseInfo,
-    RoleDetailData,
-    RoleList,
-    SlashDetail,
-)
+from ..utils.hint import error_reply
+from .models import SlashSimpleRecord
+from ..utils.waves_api import waves_api
+from ..utils.queues.queues import push_item
+from ..utils.database.models import WavesBind
 from ..utils.api.wwapi import SlashDetailRequest
 from ..utils.ascension.char import get_char_model
+from ..utils.queues.const import QUEUE_SLASH_RECORD
+from ..utils.resource.RESOURCE_PATH import SLASH_PATH
+from ..utils.imagetool import draw_pic, draw_pic_with_ring
 from ..utils.char_info_utils import get_all_roleid_detail_info
-from ..utils.error_reply import WAVES_CODE_102
-from ..utils.fonts.waves_fonts import (
-    waves_font_18,
-    waves_font_25,
-    waves_font_26,
-    waves_font_30,
-    waves_font_40,
-    waves_font_42,
+from ..utils.error_reply import WAVES_CODE_102, WAVES_CODE_999
+from ..utils.api.model import (
+    RoleList,
+    SlashDetail,
+    RoleDetailData,
+    AccountBaseInfo,
 )
-from ..utils.hint import error_reply
 from ..utils.image import (
     GOLD,
     GREY,
@@ -33,11 +33,16 @@ from ..utils.image import (
     get_waves_bg,
     pic_download_from_url,
 )
-from ..utils.imagetool import draw_pic, draw_pic_with_ring
-from ..utils.queues.const import QUEUE_SLASH_RECORD
-from ..utils.queues.queues import push_item
-from ..utils.resource.RESOURCE_PATH import SLASH_PATH
-from ..utils.waves_api import waves_api
+from ..utils.fonts.waves_fonts import (
+    waves_font_18,
+    waves_font_25,
+    waves_font_26,
+    waves_font_30,
+    waves_font_40,
+    waves_font_42,
+)
+
+logger = logging.getLogger(__name__)
 
 TEXT_PATH = Path(__file__).parent / "texture2d"
 
@@ -355,7 +360,11 @@ async def draw_slash_img(ev: Event, uid: str, user_id: str) -> Union[bytes, str]
             )
             index += 1
 
-    await upload_slash_record(is_self_ck, uid, slash_detail)
+    await asyncio.gather(
+        save_slash_record_to_db(is_self_ck, uid, user_id, account_info.name, slash_detail),
+        upload_slash_record(is_self_ck, uid, slash_detail),
+        WavesBind.insert_waves_uid(user_id, ev.bot_id, uid, ev.group_id, lenth_limit=9)
+    )
 
     card_img = add_footer(card_img, 600, 20)
     card_img = await convert_img(card_img)
@@ -420,4 +429,81 @@ async def upload_slash_record(
         }
     )
     # logger.info(f"上传冥海记录: {slash_item.model_dump()}")
-    push_item(QUEUE_SLASH_RECORD, slash_item.model_dump())
+    # push_item(QUEUE_SLASH_RECORD, slash_item.model_dump())
+
+async def save_slash_record_to_db(
+    is_self_ck: bool,
+    uid: str,
+    user_id: str,
+    name: str,
+    slash_data: SlashDetail,
+):
+    """获取到数据后，直接保存或更新到数据库"""
+    if not is_self_ck:
+        return
+
+    if not slash_data or not slash_data.difficultyList:
+        return
+
+    # 获取角色详细信息
+    role_detail_info_map = await get_all_roleid_detail_info(uid)
+    role_detail_info_map = role_detail_info_map if role_detail_info_map else {}
+
+    # 寻找第12层的数据
+    challenge_12 = None
+    for difficulty in slash_data.difficultyList:
+        for challenge in difficulty.challengeList:
+            if challenge.challengeId == 12:
+                challenge_12 = challenge
+                break
+        if challenge_12:
+            break
+
+    # 如果找到了第12层并且有数据，则保存
+    if challenge_12 and challenge_12.halfList:
+        # 构建包含详细角色信息的halfList
+        detailed_half_list = []
+        for half in challenge_12.halfList:
+            detailed_roles = []
+            for role in half.roleList:
+                char_model = get_char_model(role.roleId)
+                role_detail = None
+                if role_detail_info_map and str(role.roleId) in role_detail_info_map:
+                    role_detail = role_detail_info_map[str(role.roleId)]
+                detailed_role = {
+                    "roleId": role.roleId,
+                    "iconUrl": role.iconUrl,
+                    "roleName": char_model.name if char_model else "",
+                    "starLevel": char_model.starLevel if char_model else 0,
+                    "level": role_detail.level if role_detail else 0,
+                    "chain": role_detail.get_chain_num() if role_detail else 0,
+                }
+                detailed_roles.append(detailed_role)
+
+            # 构建详细的half信息
+            detailed_half = {
+                "buffDescription": half.buffDescription,
+                "buffIcon": half.buffIcon,
+                "buffName": half.buffName,
+                "buffQuality": half.buffQuality,
+                "roleList": detailed_roles,
+                "score": half.score,
+            }
+            detailed_half_list.append(detailed_half)
+
+        payload = {
+            "wavesId": uid,
+            "name": name,
+            "challengeId": challenge_12.challengeId,
+            "challengeName": challenge_12.challengeName,
+            "halfList": detailed_half_list,
+            "rank": challenge_12.get_rank(),
+            "score": challenge_12.score,
+        }
+        try:
+            await SlashSimpleRecord.save_simple_record(payload=payload, user_id=user_id)
+            logger.info(
+                f"成功为用户 {user_id} (UID: {uid}) 保存/更新了第12层本地冥歌海墟记录。"
+            )
+        except Exception as e:
+            logger.error(f"保存第12层本地冥歌海墟记录时出错 (UID: {uid}): {e}")

@@ -364,4 +364,4 @@ async def upload_abyss_record(
         }
     )
     # logger.info(f"上传深渊记录: {abyss_item.model_dump()}")
-    push_item(QUEUE_ABYSS_RECORD, abyss_item.model_dump())
+    # push_item(QUEUE_ABYSS_RECORD, abyss_item.model_dump())

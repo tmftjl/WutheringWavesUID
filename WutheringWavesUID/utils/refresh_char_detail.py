@@ -104,7 +104,7 @@ async def send_card(
             "role_num": account_info.roleNum,
             "single_refresh": 1 if len(waves_data) == 1 else 0,
         }
-        push_item(QUEUE_SCORE_RANK, metadata)
+        # push_item(QUEUE_SCORE_RANK, metadata)
 
 
 async def save_card_info(
