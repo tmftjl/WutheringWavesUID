@@ -251,7 +251,7 @@ async def draw_total_rank_local(bot: Bot, ev: Event, pages: int) -> Union[str, b
         if detail["uid"] == self_uid:
             uid_color = RED
         bar_draw.text(
-            (300, 75), f"特征码: {detail['uid']}", uid_color, waves_font_20, "lm"
+            (450, 75), f"特征码: {detail['uid']}", uid_color, waves_font_20, "mm"
         )
 
         # 总分数
@@ -296,15 +296,34 @@ async def draw_total_rank_local(bot: Bot, ev: Event, pages: int) -> Union[str, b
                     char_avatar_masked, (char_x, char_start_y), char_avatar_masked
                 )
 
-                # 绘制分数
-                score_text = f"{int(char['score'])}"
-                bar_draw.text(
-                    (char_x + char_size // 2, char_start_y + char_size + 2),
-                    score_text,
-                    SPECIAL_GOLD,
-                    waves_font_12,
-                    "mm",
-                )
+                # 绘制角色名（如果有的话）
+                role_name = char.get("role_name", "")
+                if role_name:
+                    # 绘制角色名在头像下方
+                    bar_draw.text(
+                        (char_x + char_size // 2, char_start_y + char_size + 2),
+                        role_name[:2],  # 只显示前2个字
+                        "white",
+                        waves_font_12,
+                        "mm",
+                    )
+                    # 绘制分数在角色名下方
+                    bar_draw.text(
+                        (char_x + char_size // 2, char_start_y + char_size + 16),
+                        f"{int(char['score'])}",
+                        SPECIAL_GOLD,
+                        waves_font_12,
+                        "mm",
+                    )
+                else:
+                    # 如果没有角色名，只显示分数
+                    bar_draw.text(
+                        (char_x + char_size // 2, char_start_y + char_size + 2),
+                        f"{int(char['score'])}",
+                        SPECIAL_GOLD,
+                        waves_font_12,
+                        "mm",
+                    )
 
             # 显示最高分
             if sorted_chars:
