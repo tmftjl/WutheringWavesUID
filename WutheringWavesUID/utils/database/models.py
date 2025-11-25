@@ -282,6 +282,59 @@ class WavesPush(Push, table=True):
     resin_value: Optional[int] = Field(title="体力阈值", default=180)
     resin_is_push: Optional[str] = Field(title="体力是否已推送", default="off")
 
+class WavesRoleData(Bind, table=True):
+    __table_args__: Dict[str, Any] = {"extend_existing": True}
+    
+    uid: str = Field(index=True, title="鸣潮UID")
+    role_id: str = Field(index=True, title="角色ID")
+    role_name: str = Field(default="", title="角色名称")
+    score: float = Field(default=0.0, index=True, title="评分")
+    damage: float = Field(default=0.0, index=True, title="伤害")
+    
+    data: Dict = Field(default={}, sa_column=Column(JSON))
+
+    @classmethod
+    @with_session
+    async def save_role_data(
+        cls, 
+        session: AsyncSession, 
+        uid: str, 
+        role_data_list: List[Dict],
+        scores_map: Dict[str, float] = {}, 
+        damage_map: Dict[str, float] = {} 
+    ):
+        for role_info in role_data_list:
+            role_id = str(role_info.get("role", {}).get("roleId", ""))
+            if not role_id:
+                continue
+            
+            # 获取该角色的分数和伤害
+            current_score = scores_map.get(role_id, 0.0)
+            current_damage = damage_map.get(role_id, 0.0)
+            
+            # 查找是否存在
+            stmt = select(cls).where(cls.uid == uid, cls.role_id == role_id)
+            result = await session.execute(stmt)
+            obj = result.scalars().first()
+
+            if obj:
+                # 更新
+                obj.role_name = role_info.get("role", {}).get("roleName", "")
+                obj.data = role_info
+                obj.score = current_score
+                obj.damage = current_damage  # 更新伤害
+                session.add(obj)
+            else:
+                # 新增
+                session.add(cls(
+                    uid=uid,
+                    role_id=role_id,
+                    role_name=role_info.get("role", {}).get("roleName", ""),
+                    score=current_score,
+                    damage=current_damage,   # 存入伤害
+                    data=role_info
+                ))
+        await session.commit()
 
 @site.register_admin
 class WavesBindAdmin(GsAdminModel):
