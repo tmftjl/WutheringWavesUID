@@ -10,6 +10,7 @@ from gsuid_core.utils.database.base_models import (
     Push,
     User,
     with_session,
+    BaseIDModel,
 )
 from gsuid_core.utils.database.startup import exec_list
 from gsuid_core.webconsole.mount_app import GsAdminModel, PageSchema, site
@@ -28,7 +29,7 @@ T_WavesBind = TypeVar("T_WavesBind", bound="WavesBind")
 T_WavesUser = TypeVar("T_WavesUser", bound="WavesUser")
 
 
-class WavesBind(Bind, table=True):
+class WavesBind(BaseIDModel, table=True):
     __table_args__: Dict[str, Any] = {"extend_existing": True}
     uid: Optional[str] = Field(default=None, title="鸣潮UID")
 
