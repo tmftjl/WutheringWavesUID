@@ -208,10 +208,6 @@ async def draw_total_rank_local(bot: Bot, ev: Event, pages: int) -> Union[str, b
     tasks = [get_avatar(detail["user_id"]) for detail in rankInfoList]
     results = await asyncio.gather(*tasks)
 
-    # 获取角色信息
-    bot_color_map = {}
-    bot_color = copy.deepcopy(BOT_COLOR)
-
     # 绘制排行条目
     for rank_temp_index, temp in enumerate(zip(rankInfoList, results)):
         detail, role_avatar = temp
@@ -246,12 +242,13 @@ async def draw_total_rank_local(bot: Bot, ev: Event, pages: int) -> Union[str, b
         bar_draw.text((210, 45), "角色数:", (255, 255, 255), waves_font_18, "lm")
         bar_draw.text((280, 45), f"{char_count}", RED, waves_font_20, "lm")
 
-        # 特征码居中显示
+        # --- 修改：特征码(UID) 移到 角色数 下方 ---
         uid_color = "white"
         if detail["uid"] == self_uid:
             uid_color = RED
+        # 坐标调整到 (210, 75)
         bar_draw.text(
-            (450, 75), f"特征码: {detail['uid']}", uid_color, waves_font_20, "mm"
+            (210, 75), f"UID: {detail['uid']}", uid_color, waves_font_18, "lm"
         )
 
         # 总分数
@@ -272,11 +269,11 @@ async def draw_total_rank_local(bot: Bot, ev: Event, pages: int) -> Union[str, b
                 char_scores, key=lambda x: x["score"], reverse=True
             )[:10]
 
-            # 在条目底部绘制前10名角色的头像
-            char_size = 40
-            char_spacing = 45
-            char_start_x = 570
-            char_start_y = 35
+            # --- 修改：放大图标尺寸并调整位置 ---
+            char_size = 55      
+            char_spacing = 61   
+            char_start_x = 400  
+            char_start_y = 30   
 
             for i, char in enumerate(sorted_chars):
                 char_x = char_start_x + i * char_spacing
@@ -296,38 +293,16 @@ async def draw_total_rank_local(bot: Bot, ev: Event, pages: int) -> Union[str, b
                     char_avatar_masked, (char_x, char_start_y), char_avatar_masked
                 )
 
-                # 绘制角色名（如果有的话）
-                char_model = get_char_model(str(char["role_id"]))
-                if char_model:
-                    role_name = char_model.name
-                if role_name:
-                    # 绘制角色名在头像下方
-                    bar_draw.text(
-                        (char_x + char_size // 2, char_start_y + char_size + 2),
-                        role_name,
-                        "white",
-                        waves_font_12,
-                        "mm",
-                    )
-                    # 绘制分数在角色名下方
-                    bar_draw.text(
-                        (char_x + char_size // 2, char_start_y + char_size + 16),
-                        f"{int(char['score'])}",
-                        SPECIAL_GOLD,
-                        waves_font_12,
-                        "mm",
-                    )
-                else:
-                    # 如果没有角色名，只显示分数
-                    bar_draw.text(
-                        (char_x + char_size // 2, char_start_y + char_size + 2),
-                        f"{int(char['score'])}",
-                        SPECIAL_GOLD,
-                        waves_font_12,
-                        "mm",
-                    )
+                # --- 修改：不再绘制角色名，只保留分数 ---
+                bar_draw.text(
+                    (char_x + char_size // 2, char_start_y + char_size + 2),
+                    f"{int(char['score'])}",
+                    SPECIAL_GOLD,
+                    waves_font_12,
+                    "mm",
+                )
 
-            # 显示最高分
+            # 显示最高分 (位置不变)
             if sorted_chars:
                 best_score = f"{int(sorted_chars[0]['score'])} "
                 bar_draw.text((1080, 45), best_score, "lightgreen", waves_font_30, "mm")
@@ -368,8 +343,6 @@ async def draw_total_rank_local(bot: Bot, ev: Event, pages: int) -> Union[str, b
 
     logger.info(f"[draw_total_rank_local] 耗时: {time.time() - start_time:.2f}秒")
     return await convert_img(card_img)
-
-
 async def get_avatar(
     qid: Optional[str],
 ) -> Image.Image:
