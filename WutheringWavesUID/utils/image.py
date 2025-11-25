@@ -137,6 +137,14 @@ async def get_role_pile(
 
     name = f"role_pile_{resource_id}.png"
     path = ROLE_PILE_PATH / name
+    if not path.exists():
+        logger.warning(f"角色立绘不存在: {path}, 使用默认立绘")
+        default_path = ROLE_PILE_PATH / "role_pile_1203.png"
+        if default_path.exists():
+            return False, Image.open(default_path).convert("RGBA")
+        else:
+            logger.error(f"默认角色立绘也不存在: {default_path}")
+            return False, Image.new("RGBA", (512, 512), (128, 128, 128, 255))
     return False, Image.open(path).convert("RGBA")
 
 
@@ -153,12 +161,28 @@ async def get_role_pile_old(
 
     name = f"role_pile_{resource_id}.png"
     path = ROLE_PILE_PATH / name
+    if not path.exists():
+        logger.warning(f"角色立绘不存在: {path}, 使用默认立绘")
+        default_path = ROLE_PILE_PATH / "role_pile_1203.png"
+        if default_path.exists():
+            return Image.open(default_path).convert("RGBA")
+        else:
+            logger.error(f"默认角色立绘也不存在: {default_path}")
+            return Image.new("RGBA", (512, 512), (128, 128, 128, 255))
     return Image.open(path).convert("RGBA")
 
 
 async def get_square_avatar(resource_id: Union[int, str]) -> Image.Image:
     name = f"role_head_{resource_id}.png"
     path = AVATAR_PATH / name
+    if not path.exists():
+        logger.warning(f"角色头像不存在: {path}, 使用默认头像")
+        default_path = AVATAR_PATH / "role_head_1203.png"
+        if default_path.exists():
+            return Image.open(default_path).convert("RGBA")
+        else:
+            logger.error(f"默认角色头像也不存在: {default_path}")
+            return Image.new("RGBA", (256, 256), (128, 128, 128, 255))
     return Image.open(path).convert("RGBA")
 
 
@@ -197,33 +221,94 @@ async def get_square_weapon(resource_id: Union[int, str]) -> Image.Image:
 
 async def get_attribute(name: str = "", is_simple: bool = False) -> Image.Image:
     if is_simple:
-        name = f"attribute/attr_simple_{name}.png"
+        attr_name = f"attribute/attr_simple_{name}.png"
     else:
-        name = f"attribute/attr_{name}.png"
-    return Image.open(TEXT_PATH / name).convert("RGBA")
+        attr_name = f"attribute/attr_{name}.png"
+
+    path = TEXT_PATH / attr_name
+    if not path.exists():
+        logger.warning(f"属性图标不存在: {path}, 使用默认属性图标")
+        if is_simple:
+            default_path = TEXT_PATH / "attribute/attr_simple_default.png"
+        else:
+            default_path = TEXT_PATH / "attribute/attr_湮灭.png"
+
+        if default_path.exists():
+            return Image.open(default_path).convert("RGBA")
+        else:
+            logger.error(f"默认属性图标也不存在: {default_path}")
+            return Image.new("RGBA", (128, 128), (128, 128, 128, 255))
+    return Image.open(path).convert("RGBA")
 
 
 async def get_attribute_prop(name: str = "") -> Image.Image:
-    return Image.open(TEXT_PATH / f"attribute_prop/attr_prop_{name}.png").convert(
-        "RGBA"
-    )
+    path = TEXT_PATH / f"attribute_prop/attr_prop_{name}.png"
+    if not path.exists():
+        logger.warning(f"属性道具图标不存在: {path}, 使用默认属性道具图标")
+        default_path = TEXT_PATH / "attribute_prop/attr_prop_攻击.png"
+        if default_path.exists():
+            return Image.open(default_path).convert("RGBA")
+        else:
+            logger.error(f"默认属性道具图标也不存在: {default_path}")
+            return Image.new("RGBA", (128, 128), (128, 128, 128, 255))
+    return Image.open(path).convert("RGBA")
 
 
 async def get_attribute_effect(name: str = "") -> Image.Image:
-    return Image.open(TEXT_PATH / f"attribute_effect/attr_{name}.png").convert("RGBA")
+    path = TEXT_PATH / f"attribute_effect/attr_{name}.png"
+    if not path.exists():
+        logger.warning(f"属性效果图标不存在: {path}, 使用默认属性效果图标")
+        default_path = TEXT_PATH / "attribute_effect/attr_沉日劫明.png"
+        if default_path.exists():
+            return Image.open(default_path).convert("RGBA")
+        else:
+            logger.error(f"默认属性效果图标也不存在: {default_path}")
+            return Image.new("RGBA", (128, 128), (128, 128, 128, 255))
+    return Image.open(path).convert("RGBA")
 
 
 async def get_weapon_type(name: str = "") -> Image.Image:
-    return Image.open(TEXT_PATH / f"weapon_type/weapon_type_{name}.png").convert("RGBA")
+    path = TEXT_PATH / f"weapon_type/weapon_type_{name}.png"
+    if not path.exists():
+        logger.warning(f"武器类型图标不存在: {path}, 使用默认武器类型图标")
+        default_path = TEXT_PATH / "weapon_type/weapon_type_长刃.png"
+        if default_path.exists():
+            return Image.open(default_path).convert("RGBA")
+        else:
+            logger.error(f"默认武器类型图标也不存在: {default_path}")
+            return Image.new("RGBA", (128, 128), (128, 128, 128, 255))
+    return Image.open(path).convert("RGBA")
 
 
 def get_waves_bg(w: int, h: int, bg: str = "bg") -> Image.Image:
-    img = Image.open(TEXT_PATH / f"{bg}.jpg").convert("RGBA")
+    path = TEXT_PATH / f"{bg}.jpg"
+    if not path.exists():
+        logger.warning(f"背景图片不存在: {path}, 使用默认背景")
+        default_path = TEXT_PATH / "bg.jpg"
+        if default_path.exists():
+            img = Image.open(default_path).convert("RGBA")
+        else:
+            logger.error(f"默认背景图片也不存在: {default_path}")
+            img = Image.new("RGBA", (w, h), (50, 50, 50, 255))
+            return img
+    else:
+        img = Image.open(path).convert("RGBA")
     return crop_center_img(img, w, h)
 
 
 def get_crop_waves_bg(w: int, h: int, bg: str = "bg") -> Image.Image:
-    img = Image.open(TEXT_PATH / f"{bg}.jpg").convert("RGBA")
+    path = TEXT_PATH / f"{bg}.jpg"
+    if not path.exists():
+        logger.warning(f"背景图片不存在: {path}, 使用默认背景")
+        default_path = TEXT_PATH / "bg.jpg"
+        if default_path.exists():
+            img = Image.open(default_path).convert("RGBA")
+        else:
+            logger.error(f"默认背景图片也不存在: {default_path}")
+            img = Image.new("RGBA", (w, h), (50, 50, 50, 255))
+            return img
+    else:
+        img = Image.open(path).convert("RGBA")
 
     width, height = img.size
 
@@ -447,7 +532,16 @@ async def draw_avatar_with_star(
 
 
 async def get_star_bg(star_level: int = 5) -> Image.Image:
-    return Image.open(TEXT_PATH / f"star_{star_level}.png")
+    path = TEXT_PATH / f"star_{star_level}.png"
+    if not path.exists():
+        logger.warning(f"星级背景不存在: {path}, 使用默认星级背景")
+        default_path = TEXT_PATH / "star_5.png"
+        if default_path.exists():
+            return Image.open(default_path)
+        else:
+            logger.error(f"默认星级背景也不存在: {default_path}")
+            return Image.new("RGBA", (144, 144), (128, 128, 128, 255))
+    return Image.open(path)
 
 
 async def pic_download_from_url(

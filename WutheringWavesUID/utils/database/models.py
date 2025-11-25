@@ -29,7 +29,7 @@ T_WavesBind = TypeVar("T_WavesBind", bound="WavesBind")
 T_WavesUser = TypeVar("T_WavesUser", bound="WavesUser")
 
 
-class WavesBind(BaseIDModel, table=True):
+class WavesBind(Bind, table=True):
     __table_args__: Dict[str, Any] = {"extend_existing": True}
     uid: Optional[str] = Field(default=None, title="鸣潮UID")
 
@@ -283,7 +283,7 @@ class WavesPush(Push, table=True):
     resin_value: Optional[int] = Field(title="体力阈值", default=180)
     resin_is_push: Optional[str] = Field(title="体力是否已推送", default="off")
 
-class WavesRoleData(Bind, table=True):
+class WavesRoleData(BaseIDModel, table=True):
     __table_args__: Dict[str, Any] = {"extend_existing": True}
     
     uid: str = Field(index=True, title="鸣潮UID")
