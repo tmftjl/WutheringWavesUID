@@ -13,7 +13,6 @@ from ..wutheringwaves_abyss.draw_abyss_card import draw_abyss_img
 from .draw_challenge_card import draw_challenge_img
 sv_waves_abyss = SV("waves查询深渊")
 sv_waves_challenge = SV("waves查询全息")
-sv_waves_slash = SV("waves查询冥海")
 
 
 @sv_waves_abyss.on_command(
