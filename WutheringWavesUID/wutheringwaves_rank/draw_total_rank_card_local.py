@@ -11,7 +11,7 @@ from gsuid_core.logger import logger
 from gsuid_core.models import Event
 from gsuid_core.utils.image.convert import convert_img
 from gsuid_core.utils.image.image_tools import crop_center_img
-
+from ..utils.ascension.char import get_char_model
 from ..utils.api.model import RoleDetailData
 from ..utils.cache import TimedCache
 from ..utils.calc import WuWaCalc
@@ -297,12 +297,14 @@ async def draw_total_rank_local(bot: Bot, ev: Event, pages: int) -> Union[str, b
                 )
 
                 # 绘制角色名（如果有的话）
-                role_name = char.get("role_name", "")
+                char_model = get_char_model(str(char["role_id"]))
+                if char_model:
+                    role_name = char_model.name
                 if role_name:
                     # 绘制角色名在头像下方
                     bar_draw.text(
                         (char_x + char_size // 2, char_start_y + char_size + 2),
-                        role_name[:2],  # 只显示前2个字
+                        role_name,
                         "white",
                         waves_font_12,
                         "mm",
