@@ -11,11 +11,9 @@ from ..utils.error_reply import WAVES_CODE_103
 from ..utils.hint import error_reply
 from ..wutheringwaves_abyss.draw_abyss_card import draw_abyss_img
 from .draw_challenge_card import draw_challenge_img
-from .draw_slash_card import draw_slash_img
 
 sv_waves_abyss = SV("waves查询深渊")
 sv_waves_challenge = SV("waves查询全息")
-sv_waves_slash = SV("waves查询冥海")
 sv_waves_rank_slash = SV("waves冥海总排行", priority=0)
 
 
