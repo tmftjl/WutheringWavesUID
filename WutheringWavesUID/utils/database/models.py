@@ -45,6 +45,15 @@ class WavesBind(Bind, table=True):
         return result.all()
 
     @classmethod
+    @with_session
+    async def get_all_bind(
+        cls: Type[T_WavesBind], session: AsyncSession
+    ) -> List[T_WavesBind]:
+        """获取所有绑定数据"""
+        result = await session.scalars(select(cls))
+        return result.all()
+
+    @classmethod
     async def insert_waves_uid(
         cls: Type[T_WavesBind],
         user_id: str,
@@ -412,7 +421,7 @@ class WavesRoleData(BaseIDModel, table=True):
         page: int = 1,
         page_size: int = 20
     ) -> tuple[List["WavesRoleData"], int]:
-        """获取全局特定角色的排行数据（所有用户）
+        """获取全局特定角色的排行数据（只包含有效CK的用户）
 
         Args:
             role_id: 角色ID
@@ -423,8 +432,19 @@ class WavesRoleData(BaseIDModel, table=True):
         Returns:
             (数据列表, 总数)
         """
-        # 构建查询条件
-        stmt = select(cls).where(col(cls.role_id) == role_id)
+        # 获取所有有效用户的UID列表
+        valid_users = await WavesUser.get_waves_all_user()
+        valid_uids = [user.uid for user in valid_users if user.uid]
+
+        if not valid_uids:
+            # 如果没有有效用户，返回空列表
+            return [], 0
+
+        # 构建查询条件：只查询有效UID的角色数据
+        stmt = select(cls).where(
+            col(cls.role_id) == role_id,
+            col(cls.uid).in_(valid_uids)
+        )
 
         # 排序
         if rank_type == "damage":
@@ -433,7 +453,10 @@ class WavesRoleData(BaseIDModel, table=True):
             stmt = stmt.order_by(col(cls.score).desc(), col(cls.damage).desc())
 
         # 计算总数
-        count_stmt = select(cls).where(col(cls.role_id) == role_id)
+        count_stmt = select(cls).where(
+            col(cls.role_id) == role_id,
+            col(cls.uid).in_(valid_uids)
+        )
         count_result = await session.execute(count_stmt)
         total_count = len(count_result.scalars().all())
 
@@ -454,7 +477,7 @@ class WavesRoleData(BaseIDModel, table=True):
         role_id: str,
         rank_type: str = "score"
     ) -> Optional[int]:
-        """获取某个角色在排行榜中的位置
+        """获取某个角色在排行榜中的位置（只在有效CK用户中排名）
 
         Args:
             uid: 用户UID
@@ -472,18 +495,28 @@ class WavesRoleData(BaseIDModel, table=True):
         if not role_data:
             return None
 
+        # 获取所有有效用户的UID列表
+        valid_users = await WavesUser.get_waves_all_user()
+        valid_uids = [user.uid for user in valid_users if user.uid]
+
+        if not valid_uids or uid not in valid_uids:
+            # 如果当前用户不在有效用户列表中，返回None
+            return None
+
         # 根据排行类型获取分数
         target_value = role_data.score if rank_type == "score" else role_data.damage
 
-        # 查询排名更高的数量
+        # 查询排名更高的数量（只在有效UID中）
         if rank_type == "damage":
             count_stmt = select(cls).where(
                 col(cls.role_id) == role_id,
+                col(cls.uid).in_(valid_uids),
                 col(cls.damage) > target_value
             )
         else:
             count_stmt = select(cls).where(
                 col(cls.role_id) == role_id,
+                col(cls.uid).in_(valid_uids),
                 col(cls.score) > target_value
             )
 

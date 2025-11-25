@@ -956,7 +956,7 @@ async def draw_char_detail_img(
             )
             damage_bar_draw.text(
                 (850, 50),
-                f"#{score_rank}",
+                f"{score_rank}",
                 SPECIAL_GOLD,
                 waves_font_24,
                 "mm",
@@ -979,7 +979,7 @@ async def draw_char_detail_img(
             )
             damage_bar_draw.text(
                 (850, 50),
-                f"#{damage_rank}",
+                f"{damage_rank}",
                 SPECIAL_GOLD,
                 waves_font_24,
                 "mm",
