@@ -7,7 +7,7 @@ import aiofiles
 from gsuid_core.logger import logger
 from gsuid_core.models import Event
 
-from ..utils.api.model import AccountBaseInfo, RoleList
+from ..utils.api.model import AccountBaseInfo, RoleList, RoleDetailData
 from ..utils.error_reply import WAVES_CODE_101, WAVES_CODE_102
 from ..utils.expression_ctx import WavesCharRank, get_waves_char_rank
 from ..utils.hint import error_reply
@@ -18,6 +18,7 @@ from ..utils.util import get_version
 from ..utils.waves_api import waves_api
 from ..wutheringwaves_config import WutheringWavesConfig
 from .resource.constant import SPECIAL_CHAR_INT_ALL
+from .database.models import WavesRoleData
 
 
 def is_use_global_semaphore() -> bool:
@@ -118,52 +119,49 @@ async def save_card_info(
 ):
     if len(waves_data) == 0:
         return
-    _dir = PLAYER_PATH / uid
-    _dir.mkdir(parents=True, exist_ok=True)
-    path = _dir / "rawData.json"
 
-    old_data = {}
-    if path.exists():
-        try:
-            async with aiofiles.open(path, mode="r", encoding="utf-8") as f:
-                old = json.loads(await f.read())
-                old_data = {d["role"]["roleId"]: d for d in old}
-        except Exception as e:
-            logger.exception(f"save_card_info get failed {path}:", e)
-            path.unlink(missing_ok=True)
+    # 获取旧数据（从数据库）
+    old_data_map = await WavesRoleData.get_role_data_map_by_uid(uid)
 
-    #
+    # 标记更新和未更新的角色
     refresh_update = {}
     refresh_unchanged = {}
+
     for item in waves_data:
         role_id = item["role"]["roleId"]
 
         if role_id in SPECIAL_CHAR_INT_ALL:
-            # 漂泊者预处理
+            # 漂泊者预处理 - 删除其他漂泊者形态的旧数据
             for piaobo_id in SPECIAL_CHAR_INT_ALL:
-                old = old_data.get(piaobo_id)
-                if not old:
-                    continue
-                if piaobo_id != role_id:
-                    del old_data[piaobo_id]
+                if piaobo_id != role_id and str(piaobo_id) in old_data_map:
+                    del old_data_map[str(piaobo_id)]
 
-        old = old_data.get(role_id)
+        old = old_data_map.get(str(role_id))
         if old != item:
             refresh_update[role_id] = item
         else:
             refresh_unchanged[role_id] = item
 
-        old_data[role_id] = item
+        old_data_map[str(role_id)] = item
 
-    save_data = list(old_data.values())
+    save_data = list(old_data_map.values())
 
     await send_card(uid, user_id, save_data, is_self_ck, token, role_info, waves_data)
 
+    # 计算所有角色的评分和伤害 - 调用数据库模型的方法
+    scores_map, damage_map = await WavesRoleData.calc_role_scores_and_damages(save_data)
+
+    # 保存到数据库
     try:
-        async with aiofiles.open(path, "w", encoding="utf-8") as file:
-            await file.write(json.dumps(save_data, ensure_ascii=False))
+        await WavesRoleData.save_role_data(
+            uid=uid,
+            role_data_list=save_data,
+            scores_map=scores_map,
+            damage_map=damage_map
+        )
+        logger.info(f"角色数据已保存到数据库: uid={uid}, 角色数量={len(save_data)}")
     except Exception as e:
-        logger.exception(f"save_card_info save failed {path}:", e)
+        logger.exception(f"保存角色数据到数据库失败 uid={uid}:", e)
 
     if waves_map:
         waves_map["refresh_update"] = refresh_update

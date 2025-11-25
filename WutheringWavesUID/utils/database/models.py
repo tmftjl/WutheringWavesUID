@@ -335,6 +335,273 @@ class WavesRoleData(Bind, table=True):
                     data=role_info
                 ))
         await session.commit()
+    @classmethod
+    @with_session
+    async def get_role_data_by_uid(
+        cls, session: AsyncSession, uid: str
+    ) -> List["WavesRoleData"]:
+        result = await session.execute(select(cls).where(col(cls.uid) == uid))
+        rows = result.scalars().all()
+        return list(rows)
+
+    @classmethod
+    @with_session
+    async def get_role_data_map_by_uid(
+        cls, session: AsyncSession, uid: str
+    ) -> Dict[str, Dict]:
+        result = await session.execute(select(cls).where(col(cls.uid) == uid))
+        rows = result.scalars().all()
+        return {str(r.role_id): (r.data or {}) for r in rows}
+
+    @classmethod
+    @with_session
+    async def get_role_rank_by_group(
+        cls,
+        session: AsyncSession,
+        uid_list: List[str],
+        role_id: str,
+        rank_type: str = "score",  # "score" 或 "damage"
+        limit: int = 100
+    ) -> List["WavesRoleData"]:
+        """获取群内特定角色的排行数据
+
+        Args:
+            uid_list: 群内所有UID列表
+            role_id: 角色ID
+            rank_type: 排行类型，"score"按评分排序，"damage"按伤害排序
+            limit: 返回数量限制
+        """
+        stmt = select(cls).where(
+            col(cls.uid).in_(uid_list),
+            col(cls.role_id) == role_id
+        )
+
+        if rank_type == "damage":
+            stmt = stmt.order_by(col(cls.damage).desc(), col(cls.score).desc())
+        else:  # 默认按评分排序
+            stmt = stmt.order_by(col(cls.score).desc(), col(cls.damage).desc())
+
+        stmt = stmt.limit(limit)
+
+        result = await session.execute(stmt)
+        rows = result.scalars().all()
+        return list(rows)
+
+    @classmethod
+    @with_session
+    async def get_all_roles_by_uid_list(
+        cls,
+        session: AsyncSession,
+        uid_list: List[str]
+    ) -> List["WavesRoleData"]:
+        """获取多个UID的所有角色数据"""
+        result = await session.execute(
+            select(cls).where(col(cls.uid).in_(uid_list))
+        )
+        rows = result.scalars().all()
+        return list(rows)
+
+    @classmethod
+    @with_session
+    async def get_global_role_rank(
+        cls,
+        session: AsyncSession,
+        role_id: str,
+        rank_type: str = "score",  # "score" 或 "damage"
+        page: int = 1,
+        page_size: int = 20
+    ) -> tuple[List["WavesRoleData"], int]:
+        """获取全局特定角色的排行数据（所有用户）
+
+        Args:
+            role_id: 角色ID
+            rank_type: 排行类型，"score"按评分排序，"damage"按伤害排序
+            page: 页码（从1开始）
+            page_size: 每页数量
+
+        Returns:
+            (数据列表, 总数)
+        """
+        # 构建查询条件
+        stmt = select(cls).where(col(cls.role_id) == role_id)
+
+        # 排序
+        if rank_type == "damage":
+            stmt = stmt.order_by(col(cls.damage).desc(), col(cls.score).desc())
+        else:  # 默认按评分排序
+            stmt = stmt.order_by(col(cls.score).desc(), col(cls.damage).desc())
+
+        # 计算总数
+        count_stmt = select(cls).where(col(cls.role_id) == role_id)
+        count_result = await session.execute(count_stmt)
+        total_count = len(count_result.scalars().all())
+
+        # 分页
+        offset = (page - 1) * page_size
+        stmt = stmt.offset(offset).limit(page_size)
+
+        result = await session.execute(stmt)
+        rows = result.scalars().all()
+        return list(rows), total_count
+
+    @classmethod
+    @with_session
+    async def get_role_rank_position(
+        cls,
+        session: AsyncSession,
+        uid: str,
+        role_id: str,
+        rank_type: str = "score"
+    ) -> Optional[int]:
+        """获取某个角色在排行榜中的位置
+
+        Args:
+            uid: 用户UID
+            role_id: 角色ID
+            rank_type: 排行类型，"score"按评分排序，"damage"按伤害排序
+
+        Returns:
+            排名（从1开始），如果不存在则返回None
+        """
+        # 先获取该角色的数据
+        stmt = select(cls).where(col(cls.uid) == uid, col(cls.role_id) == role_id)
+        result = await session.execute(stmt)
+        role_data = result.scalars().first()
+
+        if not role_data:
+            return None
+
+        # 根据排行类型获取分数
+        target_value = role_data.score if rank_type == "score" else role_data.damage
+
+        # 查询排名更高的数量
+        if rank_type == "damage":
+            count_stmt = select(cls).where(
+                col(cls.role_id) == role_id,
+                col(cls.damage) > target_value
+            )
+        else:
+            count_stmt = select(cls).where(
+                col(cls.role_id) == role_id,
+                col(cls.score) > target_value
+            )
+
+        count_result = await session.execute(count_stmt)
+        higher_count = len(count_result.scalars().all())
+
+        return higher_count + 1
+
+    @classmethod
+    async def migrate_from_json(cls, uid: str, json_data: List[Dict]) -> bool:
+        """从JSON文件迁移数据到数据库
+
+        Args:
+            uid: 用户UID
+            json_data: JSON文件中的角色数据列表
+
+        Returns:
+            是否迁移成功
+        """
+        try:
+            scores_map, damage_map = await cls.calc_role_scores_and_damages(json_data)
+
+            # 保存到数据库
+            await cls.save_role_data(
+                uid=uid,
+                role_data_list=json_data,
+                scores_map=scores_map,
+                damage_map=damage_map
+            )
+
+            return True
+        except Exception:
+            return False
+
+    @classmethod
+    async def calc_role_scores_and_damages(
+        cls, waves_data: List[Dict]
+    ) -> tuple[Dict[str, float], Dict[str, float]]:
+        """计算所有角色的评分和伤害（数据库操作方法）
+
+        Args:
+            waves_data: 角色数据列表
+
+        Returns:
+            (scores_map, damage_map): 角色ID -> 评分/伤害 的映射字典
+        """
+        from ..api.model import RoleDetailData
+        from ..calc import WuWaCalc
+        from ..calculate import calc_phantom_score, get_calc_map
+        from ..damage.abstract import DamageRankRegister
+
+        scores_map = {}
+        damage_map = {}
+
+        for role_data in waves_data:
+            try:
+                role_detail = RoleDetailData(**role_data)
+                role_id = str(role_detail.role.roleId)
+
+                # 如果没有声骸数据，跳过
+                if (
+                    not role_detail.phantomData
+                    or not role_detail.phantomData.equipPhantomList
+                ):
+                    scores_map[role_id] = 0.0
+                    damage_map[role_id] = 0.0
+                    continue
+
+                # 计算评分
+                calc: WuWaCalc = WuWaCalc(role_detail)
+                calc.phantom_pre = calc.prepare_phantom()
+                calc.phantom_card = calc.enhance_summation_phantom_value(
+                    calc.phantom_pre
+                )
+                calc.calc_temp = get_calc_map(
+                    calc.phantom_card,
+                    role_detail.role.roleName,
+                    role_detail.role.roleId,
+                )
+
+                phantom_score = 0.0
+                for _phantom in role_detail.phantomData.equipPhantomList:
+                    if _phantom and _phantom.phantomProp:
+                        props = _phantom.get_props()
+                        _score, _bg = calc_phantom_score(
+                            role_detail.role.roleId,
+                            props,
+                            _phantom.cost,
+                            calc.calc_temp,
+                        )
+                        phantom_score += _score
+
+                scores_map[role_id] = round(phantom_score, 2)
+
+                # 计算伤害
+                rankDetail = DamageRankRegister.find_class(role_id)
+                if rankDetail:
+                    calc.role_card = calc.enhance_summation_card_value(calc.phantom_card)
+                    calc.damageAttribute = calc.card_sort_map_to_attribute(calc.role_card)
+                    _, expected_damage = rankDetail["func"](
+                        calc.damageAttribute, role_detail
+                    )
+                    # 去掉逗号并转换为浮点数
+                    damage_map[role_id] = float(expected_damage.replace(",", ""))
+                else:
+                    damage_map[role_id] = 0.0
+
+            except Exception as e:
+                from gsuid_core.logger import logger
+
+                logger.exception(
+                    f"计算角色 {role_data.get('role', {}).get('roleId')} 评分和伤害失败:", e
+                )
+                role_id = str(role_data.get("role", {}).get("roleId", ""))
+                scores_map[role_id] = 0.0
+                damage_map[role_id] = 0.0
+
+        return scores_map, damage_map
+
 
 @site.register_admin
 class WavesBindAdmin(GsAdminModel):

@@ -19,7 +19,7 @@ from ..utils.api.model import (
     WeaponData,
 )
 from ..utils.api.model_other import EnemyDetailData
-from ..utils.api.wwapi import ONE_RANK_URL, OneRankRequest, OneRankResponse
+from ..utils.database.models import WavesRoleData
 from ..utils.ascension.char import get_char_model
 from ..utils.ascension.template import get_template_data
 from ..utils.ascension.weapon import (
@@ -163,30 +163,6 @@ weight_list = [
 
 damage_bar1 = Image.open(TEXT_PATH / "damage_bar1.png")
 damage_bar2 = Image.open(TEXT_PATH / "damage_bar2.png")
-
-
-async def get_one_rank(item: OneRankRequest) -> Optional[OneRankResponse]:
-    WavesToken = WutheringWavesConfig.get_config("WavesToken").data
-
-    if not WavesToken:
-        return
-
-    async with httpx.AsyncClient() as client:
-        try:
-            res = await client.post(
-                ONE_RANK_URL,
-                json=item.dict(),
-                headers={
-                    "Content-Type": "application/json",
-                    "Authorization": f"Bearer {WavesToken}",
-                },
-                timeout=httpx.Timeout(10),
-            )
-            # logger.debug(f"获取排行: {res.text}")
-            if res.status_code == 200:
-                return OneRankResponse.model_validate(res.json())
-        except Exception as e:
-            logger.exception(f"获取排行失败: {e}")
 
 
 def parse_text_and_number(text):
@@ -705,14 +681,24 @@ async def draw_char_detail_img(
         except Exception as e:
             logger.exception("角色数据转换错误", e)
             role_detail = temp
-    else:
-        if not is_limit_query:
-            # 非极限查询时，获取评分排名
-            oneRank = await get_one_rank(
-                OneRankRequest(char_id=int(char_id), waves_id=uid)
+    # 获取本地数据库排名
+    oneRank = None
+    score_rank = None
+    damage_rank = None
+    if not is_limit_query:
+        try:
+            # 获取评分排名
+            score_rank = await WavesRoleData.get_role_rank_position(
+                uid=uid, role_id=char_id, rank_type="score"
             )
-            if oneRank and len(oneRank.data) > 0:
+            # 获取伤害排名
+            damage_rank = await WavesRoleData.get_role_rank_position(
+                uid=uid, role_id=char_id, rank_type="damage"
+            )
+            if score_rank or damage_rank:
                 dd_len += 60 * 2
+        except Exception as e:
+            logger.exception("获取排名失败:", e)
 
     # 声骸
     calc, phantom_temp = await ph_card_draw(
@@ -957,10 +943,9 @@ async def draw_char_detail_img(
                 dest=(0, 2600 + ph_sum_value + jineng_len + (dindex + 1) * 60),
             )
 
-        if oneRank and len(oneRank.data) > 0:
+        if score_rank:
             dindex += 1
             damage_bar = damage_bar2.copy() if dindex % 2 == 0 else damage_bar1.copy()
-            damage_bar_draw = ImageDraw.Draw(damage_bar)
             damage_bar_draw = ImageDraw.Draw(damage_bar)
             damage_bar_draw.text(
                 (400, 50),
@@ -971,7 +956,7 @@ async def draw_char_detail_img(
             )
             damage_bar_draw.text(
                 (850, 50),
-                f"{oneRank.data[0].rank}",
+                f"#{score_rank}",
                 SPECIAL_GOLD,
                 waves_font_24,
                 "mm",
@@ -981,9 +966,9 @@ async def draw_char_detail_img(
                 dest=(0, 2600 + ph_sum_value + jineng_len + (dindex + 1) * 60),
             )
 
+        if damage_rank:
             dindex += 1
             damage_bar = damage_bar2.copy() if dindex % 2 == 0 else damage_bar1.copy()
-            damage_bar_draw = ImageDraw.Draw(damage_bar)
             damage_bar_draw = ImageDraw.Draw(damage_bar)
             damage_bar_draw.text(
                 (400, 50),
@@ -994,7 +979,7 @@ async def draw_char_detail_img(
             )
             damage_bar_draw.text(
                 (850, 50),
-                f"{oneRank.data[1].rank}",
+                f"#{damage_rank}",
                 SPECIAL_GOLD,
                 waves_font_24,
                 "mm",
