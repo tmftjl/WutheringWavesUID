@@ -221,6 +221,23 @@ async def draw_all_rank_card_local(
             # 获取用户ID
             user_id = uid_to_user_id.get(role_data.uid, role_data.uid)
 
+            # 计算合鸣效果
+            sonata_name = ""
+            if role_detail.phantomData and role_detail.phantomData.equipPhantomList:
+                calc = WuWaCalc(role_detail)
+                calc.phantom_pre = calc.prepare_phantom()
+                calc.phantom_card = calc.enhance_summation_phantom_value(calc.phantom_pre)
+
+                ph_detail = calc.phantom_card.get("ph_detail", [])
+                if isinstance(ph_detail, list):
+                    for ph in ph_detail:
+                        if ph.get("ph_num") == 5:
+                            sonata_name = ph.get("ph_name", "")
+                            break
+                        if ph.get("isFull"):
+                            sonata_name = ph.get("ph_name", "")
+                            break
+
             # 构建rankInfo
             rankInfo_item = {
                 "roleDetail": role_detail,
@@ -237,7 +254,7 @@ async def draw_all_rank_card_local(
                 ) if role_data.score > 0 else "C",
                 "expected_damage": f"{int(role_data.damage):,}" if role_data.damage > 0 else "0",
                 "expected_damage_int": int(role_data.damage),
-                "sonata_name": "",  # 可以后续补充
+                "sonata_name": sonata_name,
             }
             rankInfoList.append(rankInfo_item)
         except Exception as e:
@@ -250,6 +267,24 @@ async def draw_all_rank_card_local(
             role_detail = RoleDetailData(**rankInfo.data) if rankInfo.data else None
             if role_detail:
                 user_id = uid_to_user_id.get(rankInfo.uid, rankInfo.uid)
+
+                # 计算合鸣效果
+                sonata_name = ""
+                if role_detail.phantomData and role_detail.phantomData.equipPhantomList:
+                    calc = WuWaCalc(role_detail)
+                    calc.phantom_pre = calc.prepare_phantom()
+                    calc.phantom_card = calc.enhance_summation_phantom_value(calc.phantom_pre)
+
+                    ph_detail = calc.phantom_card.get("ph_detail", [])
+                    if isinstance(ph_detail, list):
+                        for ph in ph_detail:
+                            if ph.get("ph_num") == 5:
+                                sonata_name = ph.get("ph_name", "")
+                                break
+                            if ph.get("isFull"):
+                                sonata_name = ph.get("ph_name", "")
+                                break
+
                 rankInfo_item = {
                     "roleDetail": role_detail,
                     "qid": user_id,
@@ -265,7 +300,7 @@ async def draw_all_rank_card_local(
                     ) if rankInfo.score > 0 else "C",
                     "expected_damage": f"{int(rankInfo.damage):,}" if rankInfo.damage > 0 else "0",
                     "expected_damage_int": int(rankInfo.damage),
-                    "sonata_name": "",
+                    "sonata_name": sonata_name,
                 }
                 rankInfoList.append(rankInfo_item)
         except Exception as e:
