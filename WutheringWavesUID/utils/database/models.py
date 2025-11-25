@@ -1,6 +1,6 @@
 from typing import Any, Dict, List, Optional, Type, TypeVar
 
-from sqlalchemy import delete, null, update
+from sqlalchemy import delete, null, update, Column, JSON
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.sql import and_, or_
 from sqlmodel import Field, col, select
