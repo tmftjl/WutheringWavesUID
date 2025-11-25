@@ -636,6 +636,193 @@ class WavesRoleData(BaseIDModel, table=True):
 
         return scores_map, damage_map
 
+    @classmethod
+    @with_session
+    async def get_total_rank(
+        cls,
+        session: AsyncSession,
+        page: int = 1,
+        page_size: int = 20,
+        min_score: float = 175.0
+    ) -> tuple[List[Dict], int]:
+        """获取练度总排行
+
+        排序规则：以所有角色声骸分数总和（分数>=175）为排序
+
+        Args:
+            page: 页码（从1开始）
+            page_size: 每页数量
+            min_score: 最低分数阈值，默认175
+
+        Returns:
+            (数据列表, 总数)
+            数据列表包含: uid, total_score, char_count, char_scores (各角色分数列表)
+        """
+        from sqlalchemy import func, case
+
+        # 获取所有有效用户的UID列表
+        valid_users = await WavesUser.get_waves_all_user()
+        valid_uids = [user.uid for user in valid_users if user.uid]
+
+        if not valid_uids:
+            return [], 0
+
+        # 使用子查询统计每个UID的总分数
+        # 只统计分数 >= min_score 的角色
+        subquery = (
+            select(
+                cls.uid,
+                func.sum(
+                    case(
+                        (cls.score >= min_score, cls.score),
+                        else_=0
+                    )
+                ).label("total_score"),
+                func.count(
+                    case(
+                        (cls.score >= min_score, 1),
+                        else_=None
+                    )
+                ).label("char_count")
+            )
+            .where(
+                col(cls.uid).in_(valid_uids),
+                cls.score >= min_score  # 优化：在 WHERE 中过滤，利用索引
+            )
+            .group_by(cls.uid)
+            .subquery()
+        )
+
+        # 查询并排序
+        stmt = (
+            select(subquery)
+            .order_by(subquery.c.total_score.desc())
+        )
+
+        # 计算总数
+        count_result = await session.execute(stmt)
+        all_results = count_result.all()
+        total_count = len(all_results)
+
+        # 分页
+        offset = (page - 1) * page_size
+        page_results = all_results[offset:offset + page_size]
+
+        # 构建返回数据
+        result_list = []
+        for idx, row in enumerate(page_results):
+            uid = row.uid
+            total_score = float(row.total_score or 0)
+            char_count = int(row.char_count or 0)
+
+            # 查询该用户所有符合条件的角色详情
+            char_stmt = (
+                select(cls)
+                .where(
+                    cls.uid == uid,
+                    cls.score >= min_score
+                )
+                .order_by(cls.score.desc())
+            )
+            char_result = await session.execute(char_stmt)
+            char_data_list = char_result.scalars().all()
+
+            # 构建角色分数列表（取前10个）
+            char_scores = []
+            for char_data in char_data_list[:10]:
+                char_scores.append({
+                    "role_id": char_data.role_id,
+                    "role_name": char_data.role_name,
+                    "score": char_data.score,
+                    "data": char_data.data
+                })
+
+            result_list.append({
+                "rank": offset + idx + 1,
+                "uid": uid,
+                "total_score": total_score,
+                "char_count": char_count,
+                "char_scores": char_scores
+            })
+
+        return result_list, total_count
+
+    @classmethod
+    @with_session
+    async def get_total_rank_position(
+        cls,
+        session: AsyncSession,
+        uid: str,
+        min_score: float = 175.0
+    ) -> Optional[int]:
+        """获取某个用户在练度总排行中的位置
+
+        Args:
+            uid: 用户UID
+            min_score: 最低分数阈值，默认175
+
+        Returns:
+            排名（从1开始），如果不存在则返回None
+        """
+        from sqlalchemy import func, case
+
+        # 获取所有有效用户的UID列表
+        valid_users = await WavesUser.get_waves_all_user()
+        valid_uids = [user.uid for user in valid_users if user.uid]
+
+        if not valid_uids or uid not in valid_uids:
+            return None
+
+        # 计算该用户的总分
+        user_stmt = (
+            select(
+                func.sum(
+                    case(
+                        (cls.score >= min_score, cls.score),
+                        else_=0
+                    )
+                )
+            )
+            .where(
+                cls.uid == uid,
+                cls.score >= min_score
+            )
+        )
+        user_result = await session.execute(user_stmt)
+        user_total_score = user_result.scalar() or 0
+
+        if user_total_score == 0:
+            return None
+
+        # 查询比该用户总分更高的用户数量
+        higher_stmt = (
+            select(
+                cls.uid,
+                func.sum(
+                    case(
+                        (cls.score >= min_score, cls.score),
+                        else_=0
+                    )
+                ).label("total_score")
+            )
+            .where(
+                col(cls.uid).in_(valid_uids),
+                cls.score >= min_score
+            )
+            .group_by(cls.uid)
+            .having(func.sum(
+                case(
+                    (cls.score >= min_score, cls.score),
+                    else_=0
+                )
+            ) > user_total_score)
+        )
+
+        higher_result = await session.execute(higher_stmt)
+        higher_count = len(higher_result.all())
+
+        return higher_count + 1
+
 
 @site.register_admin
 class WavesBindAdmin(GsAdminModel):

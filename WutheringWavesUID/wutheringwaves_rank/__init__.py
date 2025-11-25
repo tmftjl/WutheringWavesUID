@@ -8,6 +8,7 @@ from .darw_rank_card import draw_rank_img
 from .draw_all_rank_card import draw_all_rank_card
 from .draw_all_rank_card_local import draw_all_rank_card_local
 from .draw_total_rank_card import draw_total_rank
+from .draw_total_rank_card_local import draw_total_rank_local
 
 sv_waves_rank_list = SV("ww角色排行")
 sv_waves_rank_all_list = SV("ww角色总排行", priority=1)
@@ -88,7 +89,20 @@ async def send_all_rank_card(bot: Bot, ev: Event):
 
 @sv_waves_rank_total_list.on_command(("练度总排行", "练度总排名"), block=True)
 async def send_total_rank_card(bot: Bot, ev: Event):
+    # 支持分页
+    match = re.search(r"(\d+)", ev.raw_text)
+    if match:
+        pages = int(match.group(1))
+    else:
+        pages = 1
+    pages = max(pages, 1)  # 最小为1
+    pages = min(pages, 5)  # 最大为5
 
-    pages = 1
-    im = await draw_total_rank(bot, ev, pages)
-    await bot.send(im)
+    # 使用本地数据库版本
+    im = await draw_total_rank_local(bot, ev, pages)
+
+    if isinstance(im, str):
+        at_sender = True if ev.group_id else False
+        await bot.send(im, at_sender)
+    if isinstance(im, bytes):
+        await bot.send(im)
