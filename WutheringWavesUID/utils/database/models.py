@@ -292,15 +292,71 @@ class WavesPush(Push, table=True):
     resin_value: Optional[int] = Field(title="体力阈值", default=180)
     resin_is_push: Optional[str] = Field(title="体力是否已推送", default="off")
 
+class WavesAccountInfo(BaseIDModel, table=True):
+    __table_args__: Dict[str, Any] = {"extend_existing": True}
+
+    uid: str = Field(index=True, unique=True, title="鸣潮UID")
+    name: str = Field(default="", title="账号昵称")
+    level: int = Field(default=0, title="账号等级")
+    world_level: int = Field(default=0, title="世界等级")
+    create_time: int = Field(default=0, title="创建时间")
+
+    @classmethod
+    @with_session
+    async def save_account_info(
+        cls,
+        session: AsyncSession,
+        uid: str,
+        name: str,
+        level: int,
+        world_level: int,
+        create_time: int
+    ):
+        """保存或更新账号基础信息"""
+        stmt = select(cls).where(cls.uid == uid)
+        result = await session.execute(stmt)
+        obj = result.scalars().first()
+
+        if obj:
+            # 更新
+            obj.name = name
+            obj.level = level
+            obj.world_level = world_level
+            obj.create_time = create_time
+            session.add(obj)
+        else:
+            # 新增
+            session.add(cls(
+                uid=uid,
+                name=name,
+                level=level,
+                world_level=world_level,
+                create_time=create_time
+            ))
+        await session.commit()
+
+    @classmethod
+    @with_session
+    async def get_account_info(
+        cls,
+        session: AsyncSession,
+        uid: str
+    ) -> Optional["WavesAccountInfo"]:
+        """获取账号基础信息"""
+        stmt = select(cls).where(cls.uid == uid)
+        result = await session.execute(stmt)
+        return result.scalars().first()
+
+
 class WavesRoleData(BaseIDModel, table=True):
     __table_args__: Dict[str, Any] = {"extend_existing": True}
-    
+
     uid: str = Field(index=True, title="鸣潮UID")
     role_id: str = Field(index=True, title="角色ID")
     role_name: str = Field(default="", title="角色名称")
     score: float = Field(default=0.0, index=True, title="评分")
     damage: float = Field(default=0.0, index=True, title="伤害")
-    
+
     data: Dict = Field(default={}, sa_column=Column(JSON))
 
     @classmethod

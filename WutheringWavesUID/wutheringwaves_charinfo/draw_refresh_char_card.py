@@ -174,6 +174,19 @@ async def draw_refresh_char_detail_img(
         user_id, ev.bot_id, uid, ev.group_id, lenth_limit=9
     )
 
+    # 保存账号基础信息到数据库
+    try:
+        from ..utils.database.models import WavesAccountInfo
+        await WavesAccountInfo.save_account_info(
+            uid=uid,
+            name=account_info.name,
+            level=account_info.level,
+            world_level=account_info.worldLevel,
+            create_time=account_info.creatTime
+        )
+    except Exception as e:
+        logger.exception(f"保存账号信息失败 uid={uid}:", e)
+
     waves_map = {"refresh_update": {}, "refresh_unchanged": {}}
     if ev.command == "面板":
         all_waves_datas = await get_all_role_detail_info_list(uid)

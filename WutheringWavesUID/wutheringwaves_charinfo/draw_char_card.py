@@ -636,10 +636,25 @@ async def draw_char_detail_img(
         uid = waves_id
 
     if not is_limit_query:
-        account_info = await waves_api.get_base_info(uid, ck)
-        if not account_info.success:
-            return account_info.throw_msg()
-        account_info = AccountBaseInfo.model_validate(account_info.data)
+        # 优先从数据库获取账号信息
+        from ..utils.database.models import WavesAccountInfo
+        account_info_db = await WavesAccountInfo.get_account_info(uid)
+
+        if account_info_db:
+            # 从数据库构造AccountBaseInfo对象
+            account_info = AccountBaseInfo.model_validate({
+                "name": account_info_db.name,
+                "id": uid,
+                "level": account_info_db.level,
+                "worldLevel": account_info_db.world_level,
+                "creatTime": account_info_db.create_time
+            })
+        else:
+            # 数据库中没有，从API获取
+            account_info_resp = await waves_api.get_base_info(uid, ck)
+            if not account_info_resp.success:
+                return account_info_resp.throw_msg()
+            account_info = AccountBaseInfo.model_validate(account_info_resp.data)
         force_resource_id = None
     else:
         account_info = AccountBaseInfo.model_validate(
@@ -1076,10 +1091,26 @@ async def draw_char_score_img(
     # 账户数据
     if waves_id:
         uid = waves_id
-    account_info = await waves_api.get_base_info(uid, ck)
-    if not account_info.success:
-        return account_info.throw_msg()
-    account_info = AccountBaseInfo.model_validate(account_info.data)
+
+    # 优先从数据库获取账号信息
+    from ..utils.database.models import WavesAccountInfo
+    account_info_db = await WavesAccountInfo.get_account_info(uid)
+
+    if account_info_db:
+        # 从数据库构造AccountBaseInfo对象
+        account_info = AccountBaseInfo.model_validate({
+            "name": account_info_db.name,
+            "id": uid,
+            "level": account_info_db.level,
+            "worldLevel": account_info_db.world_level,
+            "creatTime": account_info_db.create_time
+        })
+    else:
+        # 数据库中没有，从API获取
+        account_info_resp = await waves_api.get_base_info(uid, ck)
+        if not account_info_resp.success:
+            return account_info_resp.throw_msg()
+        account_info = AccountBaseInfo.model_validate(account_info_resp.data)
     # 获取数据
     avatar, role_detail = await get_role_need(ev, char_id, ck, uid, char_name, waves_id)
     if isinstance(role_detail, str):
