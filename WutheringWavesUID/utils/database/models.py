@@ -15,7 +15,7 @@ from gsuid_core.utils.database.base_models import (
 )
 from gsuid_core.utils.database.startup import exec_list
 from ..api.model import RoleDetailData
-
+from gsuid_core.webconsole.mount_app import GsAdminModel, PageSchema, site
 # --- 数据库迁移补充 ---
 exec_list.extend(
     []

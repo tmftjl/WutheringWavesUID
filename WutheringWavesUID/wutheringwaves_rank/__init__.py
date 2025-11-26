@@ -5,7 +5,6 @@ from gsuid_core.models import Event
 from gsuid_core.sv import SV
 
 from .darw_rank_card import draw_rank_img
-from .draw_all_rank_card import draw_all_rank_card
 from .draw_all_rank_card_local import draw_all_rank_card_local
 from .draw_total_rank_card import draw_total_rank
 from .draw_total_rank_card_local import draw_total_rank_local
