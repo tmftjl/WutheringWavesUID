@@ -3,14 +3,12 @@ import copy
 from pathlib import Path
 from typing import Dict, Union
 
-import httpx
 from PIL import Image, ImageDraw
 
 from gsuid_core.logger import logger
 from gsuid_core.models import Event
 from gsuid_core.utils.image.convert import convert_img
 
-from ..utils.api.wwapi import GET_HOLD_RATE_URL
 from ..utils.ascension.char import get_char_model
 from ..utils.char_info_utils import get_all_role_detail_info_list
 from ..utils.database.models import WavesBind, WavesCharHoldRate
@@ -50,7 +48,6 @@ OTHER_STAR = GOLD
 
 
 async def new_draw_char_hold_rate(ev: Event, data, group_id: str = "") -> bytes:
-    # --- 绘图函数保持原样 ---
     text = ev.text.strip() if ev.text else ""
     if "4" in text or "四" in text:
         filter_type = "四"
@@ -261,14 +258,6 @@ async def get_char_hold_rate_data() -> Dict:
 
         if not cache_records:
             logger.warning("角色持有率缓存为空，请执行 'ww更新持有率缓存' 命令")
-            # 兼容逻辑：如果本地数据库为空，尝试从API获取（如果有API URL的话）
-            async with httpx.AsyncClient() as client:
-                try:
-                    response = await client.get(GET_HOLD_RATE_URL, timeout=5)
-                    if response.status_code == 200:
-                         return response.json().get("data", {})
-                except:
-                    pass
             return {}
 
         # 获取总玩家数（取第一条记录的值，所有记录应该相同）
@@ -319,9 +308,7 @@ async def get_group_char_hold_rate_data(group_id: str) -> Dict:
 
         uid_data = {}
         for role_detail in role_details:
-            # 【关键修改】统一调用 get_chain_num()
-            # RoleDetailData 类内部封装了对 chainNum、resonChain 等不同字段的处理逻辑
-            # 这样可以确保准确获取共鸣链数，避免全是0的情况
+            # 统一调用 get_chain_num()，确保准确获取共鸣链数
             uid_data[role_detail.role.roleId] = role_detail.get_chain_num()
 
         return uid, uid_data
@@ -379,11 +366,10 @@ async def get_group_char_hold_rate_data(group_id: str) -> Dict:
 
     for char_id, stats in char_stats.items():
         player_count = stats["player_count"]
-        # 持有率 = 拥有人数 / 总人数
+        # 持有率
         hold_rate = round(player_count / total_player_count * 100, 1)
 
         # 计算共鸣链分布百分比
-        # 分布 = 某链人数 / 拥有人数 (这就是你要求的逻辑)
         chain_hold_rate = {}
         for chain, count in stats["chains"].items():
             if count > 0:
