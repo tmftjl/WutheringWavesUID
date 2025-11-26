@@ -1,6 +1,6 @@
 from typing import Any, Dict, List, Optional, Type, TypeVar
 
-from sqlalchemy import delete, null, update, Column, JSON
+from sqlalchemy import delete, null, update, Column, JSON, UniqueConstraint
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.sql import and_, or_
 from sqlmodel import Field, col, select
@@ -349,7 +349,16 @@ class WavesAccountInfo(BaseIDModel, table=True):
 
 
 class WavesRoleData(BaseIDModel, table=True):
-    __table_args__: Dict[str, Any] = {"extend_existing": True}
+    __table_args__ = (
+        # 唯一约束：确保同一个UID下的同一个角色只有一个记录
+        UniqueConstraint('uid', 'role_id', name='uq_waves_role_uid_role'),
+        # 复合索引：极大加速“查询某角色按评分排序”的速度
+        Index('ix_role_id_score', 'role_id', 'score'),
+        # 复合索引：极大加速“查询某角色按伤害排序”的速度
+        Index('ix_role_id_damage', 'role_id', 'damage'),
+        # 允许表结构扩展
+        {'extend_existing': True},
+    )
 
     uid: str = Field(index=True, title="鸣潮UID")
     role_id: str = Field(index=True, title="角色ID")
@@ -369,44 +378,67 @@ class WavesRoleData(BaseIDModel, table=True):
         scores_map: Dict[str, float] = {}, 
         damage_map: Dict[str, float] = {} 
     ):
+        """
+        批量保存角色数据（性能优化版）
+        避免了 N+1 查询问题，一次性拉取旧数据进行比对。
+        """
+        if not role_data_list:
+            return
+
+        # 1. 一次性查出该用户所有已存在的角色数据
+        stmt = select(cls).where(cls.uid == uid)
+        result = await session.execute(stmt)
+        existing_roles = result.scalars().all()
+        # 构建映射: role_id -> 对象
+        existing_map = {r.role_id: r for r in existing_roles}
+
+        to_add = []
+        
         for role_info in role_data_list:
             role_id = str(role_info.get("role", {}).get("roleId", ""))
             if not role_id:
                 continue
             
-            # 获取该角色的分数和伤害
+            # 准备新数据
+            new_role_name = role_info.get("role", {}).get("roleName", "")
             current_score = scores_map.get(role_id, 0.0)
             current_damage = damage_map.get(role_id, 0.0)
-            
-            # 查找是否存在
-            stmt = select(cls).where(cls.uid == uid, cls.role_id == role_id)
-            result = await session.execute(stmt)
-            obj = result.scalars().first()
 
-            if obj:
-                # 更新
-                obj.role_name = role_info.get("role", {}).get("roleName", "")
+            # 2. 在内存中判断是更新还是新增
+            if role_id in existing_map:
+                # 更新现有对象
+                obj = existing_map[role_id]
+                # 只有数据变动时才更新，SQLAlchemy 会自动处理 dirty check
+                obj.role_name = new_role_name
                 obj.data = role_info
                 obj.score = current_score
-                obj.damage = current_damage  # 更新伤害
+                obj.damage = current_damage
                 session.add(obj)
             else:
-                # 新增
-                session.add(cls(
+                # 准备新增对象
+                new_obj = cls(
                     uid=uid,
                     role_id=role_id,
-                    role_name=role_info.get("role", {}).get("roleName", ""),
+                    role_name=new_role_name,
                     score=current_score,
-                    damage=current_damage,   # 存入伤害
+                    damage=current_damage,
                     data=role_info
-                ))
+                )
+                to_add.append(new_obj)
+
+        # 3. 批量添加新增对象
+        if to_add:
+            session.add_all(to_add)
+        
+        # 4. 一次性提交
         await session.commit()
+
     @classmethod
     @with_session
     async def get_role_data_by_uid(
         cls, session: AsyncSession, uid: str
     ) -> List["WavesRoleData"]:
-        result = await session.execute(select(cls).where(col(cls.uid) == uid))
+        result = await session.execute(select(cls).where(cls.uid == uid))
         rows = result.scalars().all()
         return list(rows)
 
@@ -415,7 +447,7 @@ class WavesRoleData(BaseIDModel, table=True):
     async def get_role_data_map_by_uid(
         cls, session: AsyncSession, uid: str
     ) -> Dict[str, Dict]:
-        result = await session.execute(select(cls).where(col(cls.uid) == uid))
+        result = await session.execute(select(cls).where(cls.uid == uid))
         rows = result.scalars().all()
         return {str(r.role_id): (r.data or {}) for r in rows}
 
@@ -429,23 +461,16 @@ class WavesRoleData(BaseIDModel, table=True):
         rank_type: str = "score",  # "score" 或 "damage"
         limit: int = 100
     ) -> List["WavesRoleData"]:
-        """获取群内特定角色的排行数据
-
-        Args:
-            uid_list: 群内所有UID列表
-            role_id: 角色ID
-            rank_type: 排行类型，"score"按评分排序，"damage"按伤害排序
-            limit: 返回数量限制
-        """
+        """获取群内特定角色的排行数据"""
         stmt = select(cls).where(
-            col(cls.uid).in_(uid_list),
-            col(cls.role_id) == role_id
+            cls.uid.in_(uid_list),
+            cls.role_id == role_id
         )
 
         if rank_type == "damage":
-            stmt = stmt.order_by(col(cls.damage).desc(), col(cls.score).desc())
+            stmt = stmt.order_by(cls.damage.desc(), cls.score.desc())
         else:  # 默认按评分排序
-            stmt = stmt.order_by(col(cls.score).desc(), col(cls.damage).desc())
+            stmt = stmt.order_by(cls.score.desc(), cls.damage.desc())
 
         stmt = stmt.limit(limit)
 
@@ -462,7 +487,7 @@ class WavesRoleData(BaseIDModel, table=True):
     ) -> List["WavesRoleData"]:
         """获取多个UID的所有角色数据"""
         result = await session.execute(
-            select(cls).where(col(cls.uid).in_(uid_list))
+            select(cls).where(cls.uid.in_(uid_list))
         )
         rows = result.scalars().all()
         return list(rows)
@@ -476,53 +501,43 @@ class WavesRoleData(BaseIDModel, table=True):
         rank_type: str = "score",  # "score" 或 "damage"
         page: int = 1,
         page_size: int = 20
-    ) -> tuple[List["WavesRoleData"], int]:
-        """获取全局特定角色的排行数据（只包含有效CK的用户）
-
-        Args:
-            role_id: 角色ID
-            rank_type: 排行类型，"score"按评分排序，"damage"按伤害排序
-            page: 页码（从1开始）
-            page_size: 每页数量
-
-        Returns:
-            (数据列表, 总数)
-        """
-        # 获取所有有效用户的UID列表
-        valid_users = await WavesUser.get_waves_all_user()
-        valid_uids = [user.uid for user in valid_users if user.uid]
-
-        if not valid_uids:
-            # 如果没有有效用户，返回空列表
-            return [], 0
-
-        # 构建查询条件：只查询有效UID的角色数据
-        stmt = select(cls).where(
-            col(cls.role_id) == role_id,
-            col(cls.uid).in_(valid_uids)
+    ) -> Tuple[List["WavesRoleData"], int]:
+        """获取全局特定角色的排行数据（只包含有效CK的用户）"""
+        
+        # 构建有效用户的过滤条件
+        valid_user_filter = and_(
+            or_(WavesUser.status == null(), WavesUser.status == ""),
+            WavesUser.cookie != null(),
+            WavesUser.cookie != ""
         )
+
+        # 基础查询：连接 Users 表
+        base_query = select(cls).join(WavesUser, WavesUser.uid == cls.uid).where(
+            cls.role_id == role_id,
+            valid_user_filter
+        )
+
+        # 计算总数
+        # 优化：使用 select(func.count()).select_from(...)
+        count_stmt = select(func.count()).select_from(cls).join(WavesUser, WavesUser.uid == cls.uid).where(
+            cls.role_id == role_id,
+            valid_user_filter
+        )
+        total_count = (await session.execute(count_stmt)).scalar() or 0
 
         # 排序
         if rank_type == "damage":
-            stmt = stmt.order_by(col(cls.damage).desc(), col(cls.score).desc())
-        else:  # 默认按评分排序
-            stmt = stmt.order_by(col(cls.score).desc(), col(cls.damage).desc())
-
-        # 计算总数
-        count_stmt = select(cls).where(
-            col(cls.role_id) == role_id,
-            col(cls.uid).in_(valid_uids)
-        )
-        count_result = await session.execute(count_stmt)
-        total_count = len(count_result.scalars().all())
+            stmt = base_query.order_by(cls.damage.desc(), cls.score.desc())
+        else:
+            stmt = base_query.order_by(cls.score.desc(), cls.damage.desc())
 
         # 分页
-        offset = (page - 1) * page_size
+        offset = max(0, (page - 1) * page_size)
         stmt = stmt.offset(offset).limit(page_size)
 
         result = await session.execute(stmt)
         rows = result.scalars().all()
-        return list(rows), total_count
+        return list(rows), int(total_count)
 
     @classmethod
     @with_session
@@ -533,101 +548,249 @@ class WavesRoleData(BaseIDModel, table=True):
         role_id: str,
         rank_type: str = "score"
     ) -> Optional[int]:
-        """获取某个角色在排行榜中的位置（只在有效CK用户中排名）
-
-        Args:
-            uid: 用户UID
-            role_id: 角色ID
-            rank_type: 排行类型，"score"按评分排序，"damage"按伤害排序
-
-        Returns:
-            排名（从1开始），如果不存在则返回None
-        """
-        # 先获取该角色的数据
-        stmt = select(cls).where(col(cls.uid) == uid, col(cls.role_id) == role_id)
+        """获取某个角色在排行榜中的位置（只在有效CK用户中排名）"""
+        
+        # 1. 先获取该角色的数据
+        stmt = select(cls).where(cls.uid == uid, cls.role_id == role_id)
         result = await session.execute(stmt)
         role_data = result.scalars().first()
 
         if not role_data:
             return None
 
-        # 获取所有有效用户的UID列表
-        valid_users = await WavesUser.get_waves_all_user()
-        valid_uids = [user.uid for user in valid_users if user.uid]
-
-        if not valid_uids or uid not in valid_uids:
-            # 如果当前用户不在有效用户列表中，返回None
+        # 2. 确认此UID为有效CK用户
+        valid_user_filter = and_(
+            or_(WavesUser.status == null(), WavesUser.status == ""),
+            WavesUser.cookie != null(),
+            WavesUser.cookie != ""
+        )
+        
+        user_check_stmt = select(func.count()).select_from(WavesUser).where(
+            WavesUser.uid == uid,
+            valid_user_filter
+        )
+        is_valid = (await session.execute(user_check_stmt)).scalar() or 0
+        
+        if not is_valid:
             return None
 
-        # 根据排行类型获取分数
+        # 3. 统计比该值更高的人数（仅在有效CK用户内）
         target_value = role_data.score if rank_type == "score" else role_data.damage
+        
+        # 动态选择比较字段
+        compare_col = cls.damage if rank_type == "damage" else cls.score
 
-        # 查询排名更高的数量（只在有效UID中）
-        if rank_type == "damage":
-            count_stmt = select(cls).where(
-                col(cls.role_id) == role_id,
-                col(cls.uid).in_(valid_uids),
-                col(cls.damage) > target_value
-            )
-        else:
-            count_stmt = select(cls).where(
-                col(cls.role_id) == role_id,
-                col(cls.uid).in_(valid_uids),
-                col(cls.score) > target_value
-            )
+        count_stmt = select(func.count()).select_from(cls).join(WavesUser, WavesUser.uid == cls.uid).where(
+            cls.role_id == role_id,
+            compare_col > target_value,
+            valid_user_filter
+        )
 
-        count_result = await session.execute(count_stmt)
-        higher_count = len(count_result.scalars().all())
-
-        return higher_count + 1
+        higher_count = (await session.execute(count_stmt)).scalar() or 0
+        return int(higher_count) + 1
 
     @classmethod
-    async def migrate_from_json(cls, uid: str, json_data: List[Dict]) -> bool:
-        """从JSON文件迁移数据到数据库
+    @with_session
+    async def get_total_rank(
+        cls,
+        session: AsyncSession,
+        page: int = 1,
+        page_size: int = 20,
+        min_score: float = 175.0
+    ) -> Tuple[List[Dict], int]:
+        """获取练度总排行"""
+        from collections import defaultdict
 
-        Args:
-            uid: 用户UID
-            json_data: JSON文件中的角色数据列表
+        valid_user_filter = and_(
+            or_(WavesUser.status == null(), WavesUser.status == ""),
+            WavesUser.cookie != null(),
+            WavesUser.cookie != ""
+        )
 
-        Returns:
-            是否迁移成功
-        """
-        try:
-            scores_map, damage_map = await cls.calc_role_scores_and_damages(json_data)
+        # 聚合子查询：计算每个有效用户的总分和角色数
+        subquery = (
+            select(
+                cls.uid.label("uid"),
+                func.sum(
+                    case(
+                        (cls.score >= min_score, cls.score),
+                        else_=0
+                    )
+                ).label("total_score"),
+                func.count(
+                    case(
+                        (cls.score >= min_score, 1),
+                        else_=None
+                    )
+                ).label("char_count")
+            )
+            .join(WavesUser, WavesUser.uid == cls.uid)
+            .where(
+                valid_user_filter,
+                cls.score >= min_score  # 提前过滤，利用索引加速
+            )
+            .group_by(cls.uid)
+            .subquery()
+        )
 
-            # 保存到数据库
-            await cls.save_role_data(
-                uid=uid,
-                role_data_list=json_data,
-                scores_map=scores_map,
-                damage_map=damage_map
+        # 计算总人数
+        total_count = (
+            await session.execute(select(func.count()).select_from(subquery))
+        ).scalar_one()
+
+        # 分页查询聚合结果
+        offset = max(0, (page - 1) * page_size)
+        page_stmt = (
+            select(subquery)
+            .order_by(subquery.c.total_score.desc())
+            .offset(offset)
+            .limit(page_size)
+        )
+        page_rows = (await session.execute(page_stmt)).all()
+
+        if not page_rows:
+            return [], int(total_count)
+
+        # 收集本页的 UID
+        uids = [row.uid for row in page_rows]
+
+        # 批量拉取这些用户的角色详情（避免 N+1）
+        char_stmt = (
+            select(cls)
+            .where(cls.uid.in_(uids), cls.score >= min_score)
+            .order_by(cls.uid, cls.score.desc())
+        )
+        char_rows = (await session.execute(char_stmt)).scalars().all()
+
+        # 内存分组
+        chars_by_uid = defaultdict(list)
+        for cr in char_rows:
+            chars_by_uid[cr.uid].append(cr)
+
+        # 组装最终结果
+        result_list = []
+        for idx, row in enumerate(page_rows):
+            uid = row.uid
+            total_score = float(row.total_score or 0)
+            char_count = int(row.char_count or 0)
+
+            top_chars = chars_by_uid.get(uid, [])[:10]
+            char_scores = [
+                {
+                    "role_id": c.role_id,
+                    "role_name": c.role_name,
+                    "score": c.score,
+                    "data": c.data,
+                }
+                for c in top_chars
+            ]
+
+            result_list.append(
+                {
+                    "rank": offset + idx + 1,
+                    "uid": uid,
+                    "total_score": total_score,
+                    "char_count": char_count,
+                    "char_scores": char_scores,
+                }
             )
 
-            return True
-        except Exception:
-            return False
+        return result_list, int(total_count)
+
+    @classmethod
+    @with_session
+    async def get_total_rank_position(
+        cls,
+        session: AsyncSession,
+        uid: str,
+        min_score: float = 175.0
+    ) -> Optional[int]:
+        """获取某个用户在练度总排行中的位置"""
+
+        valid_user_filter = and_(
+            or_(WavesUser.status == null(), WavesUser.status == ""),
+            WavesUser.cookie != null(),
+            WavesUser.cookie != ""
+        )
+
+        # 1. 检查用户是否有效
+        valid_exist = (
+            await session.execute(
+                select(func.count()).select_from(WavesUser).where(
+                    WavesUser.uid == uid,
+                    valid_user_filter,
+                )
+            )
+        ).scalar() or 0
+        
+        if valid_exist == 0:
+            return None
+
+        # 2. 计算当前用户的总分
+        user_stmt = (
+            select(
+                func.sum(
+                    case(
+                        (cls.score >= min_score, cls.score),
+                        else_=0,
+                    )
+                )
+            )
+            .join(WavesUser, WavesUser.uid == cls.uid)
+            .where(
+                cls.uid == uid,
+                cls.score >= min_score,
+                valid_user_filter,
+            )
+        )
+        user_total_score = (await session.execute(user_stmt)).scalar() or 0
+        
+        if user_total_score == 0:
+            return None
+
+        # 3. 统计总分高于该用户的人数（使用 having 子句）
+        higher_subq = (
+            select(cls.uid)
+            .join(WavesUser, WavesUser.uid == cls.uid)
+            .where(
+                valid_user_filter,
+                cls.score >= min_score,
+            )
+            .group_by(cls.uid)
+            .having(
+                func.sum(
+                    case(
+                        (cls.score >= min_score, cls.score),
+                        else_=0,
+                    )
+                ) > user_total_score
+            )
+            .subquery()
+        )
+
+        higher_count = (
+            await session.execute(select(func.count()).select_from(higher_subq))
+        ).scalar_one()
+
+        return int(higher_count) + 1
 
     @classmethod
     async def calc_role_scores_and_damages(
         cls, waves_data: List[Dict]
-    ) -> tuple[Dict[str, float], Dict[str, float]]:
-        """计算所有角色的评分和伤害（数据库操作方法）
-
-        Args:
-            waves_data: 角色数据列表
-
-        Returns:
-            (scores_map, damage_map): 角色ID -> 评分/伤害 的映射字典
-        """
+    ) -> Tuple[Dict[str, float], Dict[str, float]]:
+        """计算所有角色的评分和伤害（纯逻辑方法，保持不变）"""
+        # 注意：这里需要确保相关依赖包可导入
         from ..api.model import RoleDetailData
         from ..calc import WuWaCalc
         from ..calculate import calc_phantom_score, get_calc_map
         from ..damage.abstract import DamageRankRegister
+        from gsuid_core.logger import logger
 
         scores_map = {}
         damage_map = {}
 
         for role_data in waves_data:
+            role_id = str(role_data.get("role", {}).get("roleId", ""))
             try:
                 role_detail = RoleDetailData(**role_data)
                 role_id = str(role_detail.role.roleId)
@@ -642,7 +805,7 @@ class WavesRoleData(BaseIDModel, table=True):
                     continue
 
                 # 计算评分
-                calc: WuWaCalc = WuWaCalc(role_detail)
+                calc = WuWaCalc(role_detail)
                 calc.phantom_pre = calc.prepare_phantom()
                 calc.phantom_card = calc.enhance_summation_phantom_value(
                     calc.phantom_pre
@@ -664,7 +827,6 @@ class WavesRoleData(BaseIDModel, table=True):
                             calc.calc_temp,
                         )
                         phantom_score += _score
-
                 scores_map[role_id] = round(phantom_score, 2)
 
                 # 计算伤害
@@ -675,210 +837,19 @@ class WavesRoleData(BaseIDModel, table=True):
                     _, expected_damage = rankDetail["func"](
                         calc.damageAttribute, role_detail
                     )
-                    # 去掉逗号并转换为浮点数
-                    damage_map[role_id] = float(expected_damage.replace(",", ""))
+                    # 去掉千位分隔符转为浮点数
+                    damage_map[role_id] = float(str(expected_damage).replace(",", ""))
                 else:
                     damage_map[role_id] = 0.0
 
             except Exception as e:
-                from gsuid_core.logger import logger
-
                 logger.exception(
-                    f"计算角色 {role_data.get('role', {}).get('roleId')} 评分和伤害失败:", e
+                    f"计算角色 {role_id} 评分和伤害失败:", e
                 )
-                role_id = str(role_data.get("role", {}).get("roleId", ""))
                 scores_map[role_id] = 0.0
                 damage_map[role_id] = 0.0
 
         return scores_map, damage_map
-
-    @classmethod
-    @with_session
-    async def get_total_rank(
-        cls,
-        session: AsyncSession,
-        page: int = 1,
-        page_size: int = 20,
-        min_score: float = 175.0
-    ) -> tuple[List[Dict], int]:
-        """获取练度总排行
-
-        排序规则：以所有角色声骸分数总和（分数>=175）为排序
-
-        Args:
-            page: 页码（从1开始）
-            page_size: 每页数量
-            min_score: 最低分数阈值，默认175
-
-        Returns:
-            (数据列表, 总数)
-            数据列表包含: uid, total_score, char_count, char_scores (各角色分数列表)
-        """
-        from sqlalchemy import func, case
-
-        # 获取所有有效用户的UID列表
-        valid_users = await WavesUser.get_waves_all_user()
-        valid_uids = [user.uid for user in valid_users if user.uid]
-
-        if not valid_uids:
-            return [], 0
-
-        # 使用子查询统计每个UID的总分数
-        # 只统计分数 >= min_score 的角色
-        subquery = (
-            select(
-                cls.uid,
-                func.sum(
-                    case(
-                        (cls.score >= min_score, cls.score),
-                        else_=0
-                    )
-                ).label("total_score"),
-                func.count(
-                    case(
-                        (cls.score >= min_score, 1),
-                        else_=None
-                    )
-                ).label("char_count")
-            )
-            .where(
-                col(cls.uid).in_(valid_uids),
-                cls.score >= min_score  # 优化：在 WHERE 中过滤，利用索引
-            )
-            .group_by(cls.uid)
-            .subquery()
-        )
-
-        # 查询并排序
-        stmt = (
-            select(subquery)
-            .order_by(subquery.c.total_score.desc())
-        )
-
-        # 计算总数
-        count_result = await session.execute(stmt)
-        all_results = count_result.all()
-        total_count = len(all_results)
-
-        # 分页
-        offset = (page - 1) * page_size
-        page_results = all_results[offset:offset + page_size]
-
-        # 构建返回数据
-        result_list = []
-        for idx, row in enumerate(page_results):
-            uid = row.uid
-            total_score = float(row.total_score or 0)
-            char_count = int(row.char_count or 0)
-
-            # 查询该用户所有符合条件的角色详情
-            char_stmt = (
-                select(cls)
-                .where(
-                    cls.uid == uid,
-                    cls.score >= min_score
-                )
-                .order_by(cls.score.desc())
-            )
-            char_result = await session.execute(char_stmt)
-            char_data_list = char_result.scalars().all()
-
-            # 构建角色分数列表（取前10个）
-            char_scores = []
-            for char_data in char_data_list[:10]:
-                char_scores.append({
-                    "role_id": char_data.role_id,
-                    "role_name": char_data.role_name,
-                    "score": char_data.score,
-                    "data": char_data.data
-                })
-
-            result_list.append({
-                "rank": offset + idx + 1,
-                "uid": uid,
-                "total_score": total_score,
-                "char_count": char_count,
-                "char_scores": char_scores
-            })
-
-        return result_list, total_count
-
-    @classmethod
-    @with_session
-    async def get_total_rank_position(
-        cls,
-        session: AsyncSession,
-        uid: str,
-        min_score: float = 175.0
-    ) -> Optional[int]:
-        """获取某个用户在练度总排行中的位置
-
-        Args:
-            uid: 用户UID
-            min_score: 最低分数阈值，默认175
-
-        Returns:
-            排名（从1开始），如果不存在则返回None
-        """
-        from sqlalchemy import func, case
-
-        # 获取所有有效用户的UID列表
-        valid_users = await WavesUser.get_waves_all_user()
-        valid_uids = [user.uid for user in valid_users if user.uid]
-
-        if not valid_uids or uid not in valid_uids:
-            return None
-
-        # 计算该用户的总分
-        user_stmt = (
-            select(
-                func.sum(
-                    case(
-                        (cls.score >= min_score, cls.score),
-                        else_=0
-                    )
-                )
-            )
-            .where(
-                cls.uid == uid,
-                cls.score >= min_score
-            )
-        )
-        user_result = await session.execute(user_stmt)
-        user_total_score = user_result.scalar() or 0
-
-        if user_total_score == 0:
-            return None
-
-        # 查询比该用户总分更高的用户数量
-        higher_stmt = (
-            select(
-                cls.uid,
-                func.sum(
-                    case(
-                        (cls.score >= min_score, cls.score),
-                        else_=0
-                    )
-                ).label("total_score")
-            )
-            .where(
-                col(cls.uid).in_(valid_uids),
-                cls.score >= min_score
-            )
-            .group_by(cls.uid)
-            .having(func.sum(
-                case(
-                    (cls.score >= min_score, cls.score),
-                    else_=0
-                )
-            ) > user_total_score)
-        )
-
-        higher_result = await session.execute(higher_stmt)
-        higher_count = len(higher_result.all())
-
-        return higher_count + 1
-
 
 @site.register_admin
 class WavesBindAdmin(GsAdminModel):
