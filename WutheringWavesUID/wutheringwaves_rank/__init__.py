@@ -5,9 +5,8 @@ from gsuid_core.models import Event
 from gsuid_core.sv import SV
 
 from .darw_rank_card import draw_rank_img
-from .draw_all_rank_card_local import draw_all_rank_card_local
+from .draw_all_rank_card import draw_all_rank_card
 from .draw_total_rank_card import draw_total_rank
-from .draw_total_rank_card_local import draw_total_rank_local
 from .draw_group_rank_card import draw_group_rank
 
 sv_waves_rank_list = SV("ww角色排行")
@@ -79,7 +78,7 @@ async def send_all_rank_card(bot: Bot, ev: Event):
     char = char.replace("伤害", "").replace("评分", "")
 
     # 使用本地数据库版本
-    im = await draw_all_rank_card_local(bot, ev, char, rank_type, pages)
+    im = await draw_all_rank_card(bot, ev, char, rank_type, pages)
 
     if isinstance(im, str):
         at_sender = True if ev.group_id else False
@@ -100,7 +99,7 @@ async def send_total_rank_card(bot: Bot, ev: Event):
     pages = min(pages, 5)  # 最大为5
 
     # 使用本地数据库版本
-    im = await draw_total_rank_local(bot, ev, pages)
+    im = await draw_total_rank(bot, ev, pages)
 
     if isinstance(im, str):
         at_sender = True if ev.group_id else False

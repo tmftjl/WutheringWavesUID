@@ -1,9 +1,9 @@
 import asyncio
 import copy
+import time
 from pathlib import Path
 from typing import Optional, Union
 
-import httpx
 from PIL import Image, ImageDraw
 
 from gsuid_core.bot import Bot
@@ -11,14 +11,11 @@ from gsuid_core.logger import logger
 from gsuid_core.models import Event
 from gsuid_core.utils.image.convert import convert_img
 from gsuid_core.utils.image.image_tools import crop_center_img
-
-from ..utils.api.wwapi import (
-    GET_TOTAL_RANK_URL,
-    TotalRankRequest,
-    TotalRankResponse,
-)
+from ..utils.ascension.char import get_char_model
+from ..utils.api.model import RoleDetailData
 from ..utils.cache import TimedCache
-from ..utils.database.models import WavesBind
+from ..utils.calc import WuWaCalc
+from ..utils.database.models import WavesBind, WavesRoleData
 from ..utils.fonts.waves_fonts import (
     waves_font_12,
     waves_font_16,
@@ -46,7 +43,6 @@ from ..utils.image import (
     get_square_avatar,
     get_waves_bg,
 )
-from ..utils.util import get_version
 from ..wutheringwaves_config import WutheringWavesConfig
 
 TEXT_PATH = Path(__file__).parent / "texture2d"
@@ -66,52 +62,67 @@ BOT_COLOR = [
 ]
 
 
-async def get_rank(item: TotalRankRequest) -> Optional[TotalRankResponse]:
-    WavesToken = WutheringWavesConfig.get_config("WavesToken").data
-
-    if not WavesToken:
-        return
-
-    async with httpx.AsyncClient() as client:
-        try:
-            res = await client.post(
-                GET_TOTAL_RANK_URL,
-                json=item.dict(),
-                headers={
-                    "Content-Type": "application/json",
-                    "Authorization": f"Bearer {WavesToken}",
-                },
-                timeout=httpx.Timeout(10),
-            )
-            if res.status_code == 200:
-                return TotalRankResponse.model_validate(res.json())
-            else:
-                logger.warning(f"获取练度排行失败: {res.status_code} - {res.text}")
-        except Exception as e:
-            logger.exception(f"获取练度排行失败: {e}")
-
-
 async def draw_total_rank(bot: Bot, ev: Event, pages: int) -> Union[str, bytes]:
+    """使用本地数据库绘制练度总排行
+
+    排序规则：以所有角色声骸分数总和（分数>=175）为排序
+    """
+    start_time = time.time()
+    logger.info(f"[draw_total_rank] 开始获取练度总排行数据")
+
     page_num = 20
     self_uid = await WavesBind.get_uid_by_game(ev.user_id, ev.bot_id)
     if not self_uid:
         self_uid = ""
-    item = TotalRankRequest(
+
+    # 从数据库获取排行数据
+    rank_data_list, total_count = await WavesRoleData.get_total_rank(
         page=pages,
-        page_num=page_num,
-        waves_id=self_uid,
-        version=get_version(),
+        page_size=page_num,
+        min_score=175.0
     )
 
-    rankInfoList = await get_rank(item)
-    if not rankInfoList:
-        return "获取练度总排行失败"
+    if not rank_data_list:
+        return "[鸣潮] 暂无练度总排行数据\n请先使用刷新面板功能后再试！"
 
-    if rankInfoList.message and not rankInfoList.data:
-        return rankInfoList.message
+    # 获取所有user_id对应的绑定信息
+    uid_to_user_id = {}
+    all_binds = await WavesBind.get_all_bind()
+    for bind in all_binds:
+        if bind.uid:
+            for uid in bind.uid.split("_"):
+                if uid:
+                    uid_to_user_id[uid] = bind.user_id
 
-    if not rankInfoList.data:
-        return "获取练度总排行失败"
+    # 获取自己的排名（如果有）
+    rankId = None
+    rankInfo = None
+    if self_uid:
+        self_rank = await WavesRoleData.get_total_rank_position(
+            uid=self_uid,
+            min_score=175.0
+        )
+        if self_rank:
+            # 查找自己是否在当前页
+            for rank_data in rank_data_list:
+                if rank_data["uid"] == self_uid:
+                    rankId = rank_data["rank"]
+                    rankInfo = rank_data
+                    break
+            else:
+                # 如果不在当前页，但有排名
+                if self_rank > (pages - 1) * page_num + len(rank_data_list):
+                    rankId = self_rank
+                    # 获取自己的数据
+                    self_data_list, _ = await WavesRoleData.get_total_rank(
+                        page=(self_rank - 1) // page_num + 1,
+                        page_size=page_num,
+                        min_score=175.0
+                    )
+                    for data in self_data_list:
+                        if data["uid"] == self_uid:
+                            rankInfo = data
+                            break
 
     # 设置图像尺寸
     width = 1300
@@ -119,11 +130,14 @@ async def draw_total_rank(bot: Bot, ev: Event, pages: int) -> Union[str, bytes]:
     item_spacing = 120
     header_height = 510
     footer_height = 50
-    char_list_len = len(rankInfoList.data.score_details)
+
+    totalNum = len(rank_data_list)
+    if rankId and rankId > (pages - 1) * page_num + len(rank_data_list):
+        totalNum += 1
 
     # 计算所需的总高度
     total_height = (
-        header_height + text_bar_height + item_spacing * char_list_len + footer_height
+        header_height + text_bar_height + item_spacing * totalNum + footer_height
     )
 
     # 创建带背景的画布 - 使用bg9
@@ -163,17 +177,39 @@ async def draw_total_rank(bot: Bot, ev: Event, pages: int) -> Union[str, bytes]:
     # 导入必要的图片资源
     bar = Image.open(TEXT_PATH / "bar1.png")
 
+    # 构建rankInfoList（和原来一样的结构）
+    rankInfoList = []
+    for rank_data in rank_data_list:
+        uid = rank_data["uid"]
+        user_id = uid_to_user_id.get(uid, uid)
+
+        rankInfoList.append({
+            "rank": rank_data["rank"],
+            "user_id": user_id,
+            "uid": uid,
+            "total_score": rank_data["total_score"],
+            "char_count": rank_data["char_count"],
+            "char_scores": rank_data["char_scores"]
+        })
+
+    # 如果自己不在当前页但有排名，添加到最后
+    if rankId and rankInfo and rankId > (pages - 1) * page_num + len(rank_data_list):
+        user_id = uid_to_user_id.get(rankInfo["uid"], rankInfo["uid"])
+        rankInfoList.append({
+            "rank": rankId,
+            "user_id": user_id,
+            "uid": rankInfo["uid"],
+            "total_score": rankInfo["total_score"],
+            "char_count": rankInfo["char_count"],
+            "char_scores": rankInfo["char_scores"]
+        })
+
     # 获取头像
-    details = rankInfoList.data.score_details
-    tasks = [get_avatar(detail.user_id) for detail in details]
+    tasks = [get_avatar(detail["user_id"]) for detail in rankInfoList]
     results = await asyncio.gather(*tasks)
 
-    # 获取角色信息
-    bot_color_map = {}
-    bot_color = copy.deepcopy(BOT_COLOR)
-
     # 绘制排行条目
-    for rank_temp_index, temp in enumerate(zip(details, results)):
+    for rank_temp_index, temp in enumerate(zip(rankInfoList, results)):
         detail, role_avatar = temp
         y_pos = header_height + 130 + rank_temp_index * item_spacing
 
@@ -183,7 +219,7 @@ async def draw_total_rank(bot: Bot, ev: Event, pages: int) -> Union[str, bytes]:
         bar_draw = ImageDraw.Draw(bar_bg)
 
         # 绘制排名
-        rank_id = detail.rank
+        rank_id = detail["rank"]
         rank_color = (54, 54, 54)
         if rank_id == 1:
             rank_color = (255, 0, 0)
@@ -201,46 +237,24 @@ async def draw_total_rank(bot: Bot, ev: Event, pages: int) -> Union[str, bytes]:
         rank_draw.text((25, 25), f"{rank_id}", "white", waves_font_34, "mm")
         bar_bg.alpha_composite(info_rank, (40, 35))
 
-        # 绘制玩家名字
-        bar_draw.text((210, 75), f"{detail.kuro_name}", "white", waves_font_20, "lm")
-
         # 绘制角色数量
-        char_count = len(detail.char_score_details) if detail.char_score_details else 0
+        char_count = detail["char_count"]
         bar_draw.text((210, 45), "角色数:", (255, 255, 255), waves_font_18, "lm")
         bar_draw.text((280, 45), f"{char_count}", RED, waves_font_20, "lm")
 
-        # uid
+        # --- 修改：特征码(UID) 移到 角色数 下方 ---
         uid_color = "white"
-        if detail.waves_id == self_uid:
+        if detail["uid"] == self_uid:
             uid_color = RED
+        # 坐标调整到 (210, 75)
         bar_draw.text(
-            (350, 40), f"特征码: {detail.waves_id}", uid_color, waves_font_20, "lm"
+            (210, 75), f"UID: {detail['uid']}", uid_color, waves_font_18, "lm"
         )
-
-        # bot主人名字
-        botName = getattr(detail, "alias_name", None)
-        if botName:
-            color = (54, 54, 54)
-            if botName in bot_color_map:
-                color = bot_color_map[botName]
-            elif bot_color:
-                color = bot_color.pop(0)
-                bot_color_map[botName] = color
-
-            info_block = Image.new("RGBA", (200, 30), color=(255, 255, 255, 0))
-            info_block_draw = ImageDraw.Draw(info_block)
-            info_block_draw.rounded_rectangle(
-                [0, 0, 200, 30], radius=6, fill=color + (int(0.6 * 255),)
-            )
-            info_block_draw.text(
-                (100, 15), f"bot: {botName}", "white", waves_font_18, "mm"
-            )
-            bar_bg.alpha_composite(info_block, (350, 66))
 
         # 总分数
         bar_draw.text(
             (1180, 45),
-            f"{detail.total_score:.1f}",
+            f"{detail['total_score']:.1f}",
             (255, 255, 255),
             waves_font_34,
             "mm",
@@ -248,23 +262,24 @@ async def draw_total_rank(bot: Bot, ev: Event, pages: int) -> Union[str, bytes]:
         bar_draw.text((1180, 75), "总分", "white", waves_font_16, "mm")
 
         # 绘制角色信息
-        if detail.char_score_details:
-            # 按分数排序，取前6名
+        char_scores = detail["char_scores"]
+        if char_scores:
+            # 按分数排序，取前10名
             sorted_chars = sorted(
-                detail.char_score_details, key=lambda x: x.phantom_score, reverse=True
+                char_scores, key=lambda x: x["score"], reverse=True
             )[:10]
 
-            # 在条目底部绘制前10名角色的头像
-            char_size = 40
-            char_spacing = 45
-            char_start_x = 570
-            char_start_y = 35
+            # --- 修改：放大图标尺寸并调整位置 ---
+            char_size = 55      
+            char_spacing = 61   
+            char_start_x = 400  
+            char_start_y = 30   
 
             for i, char in enumerate(sorted_chars):
                 char_x = char_start_x + i * char_spacing
 
                 # 获取角色头像
-                char_avatar = await get_square_avatar(char.char_id)
+                char_avatar = await get_square_avatar(char["role_id"])
                 char_avatar = char_avatar.resize((char_size, char_size))
 
                 # 应用圆形遮罩
@@ -278,19 +293,18 @@ async def draw_total_rank(bot: Bot, ev: Event, pages: int) -> Union[str, bytes]:
                     char_avatar_masked, (char_x, char_start_y), char_avatar_masked
                 )
 
-                # 绘制分数
-                score_text = f"{int(char.phantom_score)}"
+                # --- 修改：不再绘制角色名，只保留分数 ---
                 bar_draw.text(
                     (char_x + char_size // 2, char_start_y + char_size + 2),
-                    score_text,
+                    f"{int(char['score'])}",
                     SPECIAL_GOLD,
                     waves_font_12,
                     "mm",
                 )
 
-            # 显示最高分
+            # 显示最高分 (位置不变)
             if sorted_chars:
-                best_score = f"{int(sorted_chars[0].phantom_score)} "
+                best_score = f"{int(sorted_chars[0]['score'])} "
                 bar_draw.text((1080, 45), best_score, "lightgreen", waves_font_30, "mm")
                 bar_draw.text((1080, 75), "最高分", "white", waves_font_16, "mm")
 
@@ -311,20 +325,24 @@ async def draw_total_rank(bot: Bot, ev: Event, pages: int) -> Union[str, bytes]:
     title_bg_draw = ImageDraw.Draw(title_bg)
     title_bg_draw.text((220, 290), title_text, "white", waves_font_58, "lm")
 
+    # 页码信息
+    page_info = f"第{pages}页 / 共{total_count}人"
+    title_bg_draw.text((220, 350), page_info, SPECIAL_GOLD, waves_font_20, "lm")
+
     # 遮罩
-    char_mask = Image.open(TEXT_PATH / "char_mask.png").convert("RGBA")
+    char_mask_img = Image.open(TEXT_PATH / "char_mask.png").convert("RGBA")
     # 根据width扩图
-    char_mask = char_mask.resize((width, char_mask.height * width // char_mask.width))
-    char_mask = char_mask.crop((0, char_mask.height - 500, width, char_mask.height))
-    char_mask_temp = Image.new("RGBA", char_mask.size, (0, 0, 0, 0))
-    char_mask_temp.paste(title_bg, (0, 0), char_mask)
+    char_mask_img = char_mask_img.resize((width, char_mask_img.height * width // char_mask_img.width))
+    char_mask_img = char_mask_img.crop((0, char_mask_img.height - 500, width, char_mask_img.height))
+    char_mask_temp = Image.new("RGBA", char_mask_img.size, (0, 0, 0, 0))
+    char_mask_temp.paste(title_bg, (0, 0), char_mask_img)
 
     card_img.paste(char_mask_temp, (0, 0), char_mask_temp)
 
     card_img = add_footer(card_img)
+
+    logger.info(f"[draw_total_rank] 耗时: {time.time() - start_time:.2f}秒")
     return await convert_img(card_img)
-
-
 async def get_avatar(
     qid: Optional[str],
 ) -> Image.Image:

@@ -131,7 +131,7 @@ def get_weapon_icon_bg(star: int = 3) -> Image.Image:
         return weapon_icon_bg_5.copy()
 
 
-async def draw_all_rank_card_local(
+async def draw_all_rank_card(
     bot: Bot, ev: Event, char: str, rank_type: str, pages: int
 ) -> Union[str, bytes]:
     """使用本地数据库绘制全局角色排行（完全复制群排行样式）"""
@@ -153,7 +153,7 @@ async def draw_all_rank_card_local(
     rank_type_db = "damage" if rank_type == "伤害" else "score"
 
     start_time = time.time()
-    logger.info(f"[draw_all_rank_card_local] 开始获取排行数据")
+    logger.info(f"[draw_all_rank_card] 开始获取排行数据")
 
     rank_data_list, total_count = await WavesRoleData.get_global_role_rank(
         role_id=str(find_char_id),
@@ -178,6 +178,7 @@ async def draw_all_rank_card_local(
     self_uid = None
     rankId = None
     rankInfo = None
+    need_fetch_self_data = False
     try:
         self_uid = await WavesBind.get_uid_by_game(ev.user_id, ev.bot_id)
         if self_uid:
@@ -193,9 +194,10 @@ async def draw_all_rank_card_local(
                     rankInfo = role_data
                     break
             else:
-                # 如果不在当前页，但有排名
-                if self_rank and self_rank > (pages - 1) * rank_length + len(rank_data_list):
+                # 如果不在当前页，但有排名，标记需要单独查询
+                if self_rank and self_rank > rank_length:
                     rankId = self_rank
+                    need_fetch_self_data = True
     except Exception:
         pass
 
@@ -203,17 +205,7 @@ async def draw_all_rank_card_local(
     rankDetail = DamageRankRegister.find_class(char_id)
     damage_title = (rankDetail and rankDetail["title"]) or "无"
 
-    # 计算图片高度
-    totalNum = len(rank_data_list)
-    if rankId and rankId > (pages - 1) * rank_length + len(rank_data_list):
-        totalNum += 1
-
-    title_h = 500
-    bar_star_h = 110
-    h = title_h + totalNum * bar_star_h + 80
-    card_img = get_waves_bg(1050, h, "bg3")
-    card_img_draw = ImageDraw.Draw(card_img)
-
+    # 计算图片高度 - 先不计算，等rankInfoList构建完成后再计算
     bar = Image.open(TEXT_PATH / "bar.png")
     total_score = 0
     total_damage = 0
@@ -269,50 +261,71 @@ async def draw_all_rank_card_local(
             logger.exception(f"解析角色数据失败 uid={role_data.uid}:", e)
             continue
 
-    # 如果自己不在当前页但有排名，添加到最后
-    if rankId and rankInfo and rankId > (pages - 1) * rank_length + len(rank_data_list):
+    # 如果需要单独查询自己的数据
+    if need_fetch_self_data and self_uid:
         try:
-            role_detail = RoleDetailData(**rankInfo.data) if rankInfo.data else None
-            if role_detail:
-                user_id = uid_to_user_id.get(rankInfo.uid, rankInfo.uid)
+            # 查询自己的角色数据
+            from sqlalchemy import select
+            from ..utils.database.base import get_session
 
-                # 计算合鸣效果
-                sonata_name = ""
-                if role_detail.phantomData and role_detail.phantomData.equipPhantomList:
-                    calc = WuWaCalc(role_detail)
-                    calc.phantom_pre = calc.prepare_phantom()
-                    calc.phantom_card = calc.enhance_summation_phantom_value(calc.phantom_pre)
-
-                    ph_detail = calc.phantom_card.get("ph_detail", [])
-                    if isinstance(ph_detail, list):
-                        for ph in ph_detail:
-                            if ph.get("ph_num") == 5:
-                                sonata_name = ph.get("ph_name", "")
-                                break
-                            if ph.get("isFull"):
-                                sonata_name = ph.get("ph_name", "")
-                                break
-
-                rankInfo_item = RankInfo(
-                    roleDetail=role_detail,
-                    qid=user_id,
-                    uid=rankInfo.uid,
-                    level=role_detail.role.level,
-                    chain=role_detail.get_chain_num(),
-                    chainName=role_detail.get_chain_name(),  # 使用role_detail的get_chain_name方法
-                    score=rankInfo.score,
-                    score_bg=get_total_score_bg(
-                        role_detail.role.roleName,
-                        rankInfo.score,
-                        {}
-                    ) if rankInfo.score > 0 else "C",
-                    expected_damage=f"{int(rankInfo.damage):,}" if rankInfo.damage > 0 else "0",
-                    expected_damage_int=int(rankInfo.damage),
-                    sonata_name=sonata_name,
+            async with get_session() as session:
+                stmt = select(WavesRoleData).where(
+                    WavesRoleData.uid == self_uid,
+                    WavesRoleData.role_id == str(find_char_id)
                 )
-                rankInfoList.append(rankInfo_item)
+                result = await session.execute(stmt)
+                rankInfo = result.scalar_one_or_none()
+
+                if rankInfo:
+                    role_detail = RoleDetailData(**rankInfo.data) if rankInfo.data else None
+                    if role_detail:
+                        user_id = uid_to_user_id.get(rankInfo.uid, rankInfo.uid)
+
+                        # 计算合鸣效果
+                        sonata_name = ""
+                        if role_detail.phantomData and role_detail.phantomData.equipPhantomList:
+                            calc = WuWaCalc(role_detail)
+                            calc.phantom_pre = calc.prepare_phantom()
+                            calc.phantom_card = calc.enhance_summation_phantom_value(calc.phantom_pre)
+
+                            ph_detail = calc.phantom_card.get("ph_detail", [])
+                            if isinstance(ph_detail, list):
+                                for ph in ph_detail:
+                                    if ph.get("ph_num") == 5:
+                                        sonata_name = ph.get("ph_name", "")
+                                        break
+                                    if ph.get("isFull"):
+                                        sonata_name = ph.get("ph_name", "")
+                                        break
+
+                        rankInfo_item = RankInfo(
+                            roleDetail=role_detail,
+                            qid=user_id,
+                            uid=rankInfo.uid,
+                            level=role_detail.role.level,
+                            chain=role_detail.get_chain_num(),
+                            chainName=role_detail.get_chain_name(),
+                            score=rankInfo.score,
+                            score_bg=get_total_score_bg(
+                                role_detail.role.roleName,
+                                rankInfo.score,
+                                {}
+                            ) if rankInfo.score > 0 else "C",
+                            expected_damage=f"{int(rankInfo.damage):,}" if rankInfo.damage > 0 else "0",
+                            expected_damage_int=int(rankInfo.damage),
+                            sonata_name=sonata_name,
+                        )
+                        rankInfoList.append(rankInfo_item)
         except Exception as e:
-            logger.exception(f"解析自己的角色数据失败:", e)
+            logger.exception(f"查询自己的角色数据失败:", e)
+
+    # 计算图片高度
+    totalNum = len(rankInfoList)
+    title_h = 500
+    bar_star_h = 110
+    h = title_h + totalNum * bar_star_h + 80
+    card_img = get_waves_bg(1050, h, "bg3")
+    card_img_draw = ImageDraw.Draw(card_img)
 
     # 获取所有头像
     tasks = [get_avatar(ev, rank.qid, rank.roleDetail.role.roleId) for rank in rankInfoList]
@@ -522,5 +535,5 @@ async def draw_all_rank_card_local(
     card_img = add_footer(card_img)
     card_img = await convert_img(card_img)
 
-    logger.info(f"[draw_all_rank_card_local] 耗时: {time.time() - start_time:.2f}秒")
+    logger.info(f"[draw_all_rank_card] 耗时: {time.time() - start_time:.2f}秒")
     return card_img
