@@ -28,7 +28,6 @@ from ..utils.fonts.waves_fonts import (
 )
 from ..utils.image import (
     AMBER,
-    CHAIN_COLOR,
     GREY,
     RED,
     SPECIAL_GOLD,
@@ -294,28 +293,7 @@ async def draw_total_rank_local(bot: Bot, ev: Event, pages: int) -> Union[str, b
                     char_avatar_masked, (char_x, char_start_y), char_avatar_masked
                 )
 
-                # 获取链数信息
-                chain_num = 0
-                if char.get("data"):
-                    try:
-                        role_detail = RoleDetailData(**char["data"])
-                        chain_num = role_detail.get_chain_num()
-                    except Exception:
-                        pass
-
-                # 绘制链数标识（完全复制群排行的样式）
-                chain_names = ["初", "一", "二", "三", "四", "五", "六"]
-                chain_text = chain_names[min(chain_num, 6)]
-
-                # 创建链数背景块（使用和群排行一样的尺寸和样式）
-                info_block = Image.new("RGBA", (46, 20), color=(255, 255, 255, 0))
-                info_block_draw = ImageDraw.Draw(info_block)
-                fill = CHAIN_COLOR[chain_num] + (int(0.9 * 255),)
-                info_block_draw.rounded_rectangle([0, 0, 46, 20], radius=6, fill=fill)
-                info_block_draw.text((5, 10), chain_text, "white", waves_font_18, "lm")
-                bar_bg.alpha_composite(info_block, (char_x - 10, char_start_y - 5))
-
-                # 绘制分数（在头像下方）
+                # --- 修改：不再绘制角色名，只保留分数 ---
                 bar_draw.text(
                     (char_x + char_size // 2, char_start_y + char_size + 2),
                     f"{int(char['score'])}",

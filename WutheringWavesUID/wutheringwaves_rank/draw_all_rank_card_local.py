@@ -1,9 +1,10 @@
 import asyncio
 import time
 from pathlib import Path
-from typing import List, Union
+from typing import List, Optional, Union
 
 from PIL import Image, ImageDraw
+from pydantic import BaseModel
 
 from gsuid_core.bot import Bot
 from gsuid_core.logger import logger
@@ -66,27 +67,34 @@ logo_img = Image.open(TEXT_PATH / "logo_small_2.png")
 pic_cache = TimedCache(86400, 200)
 
 
-def get_chain_name(chain: int) -> str:
-    """获取命座名称"""
-    chain_names = ["初", "一", "二", "三", "四", "五", "六"]
-    return chain_names[min(chain, 6)]
+class RankInfo(BaseModel):
+    roleDetail: RoleDetailData  # 角色明细
+    qid: str  # qq id
+    uid: str  # uid
+    level: int  # 角色等级
+    chain: int  # 命座
+    chainName: str  # 命座
+    score: float  # 角色评分
+    score_bg: str  # 评分背景
+    expected_damage: str  # 期望伤害
+    expected_damage_int: int  # 期望伤害
+    sonata_name: str  # 合鸣效果
 
 
 async def get_avatar(
     ev: Event,
-    user_id: str,
+    qid: Optional[Union[int, str]],
     char_id: Union[int, str],
 ) -> Image.Image:
-    """获取用户头像"""
     if ev.bot_id == "onebot":
         if WutheringWavesConfig.get_config("QQPicCache").data:
-            pic = pic_cache.get(user_id)
+            pic = pic_cache.get(qid)
             if not pic:
-                pic = await get_qq_avatar(user_id, size=100)
-                pic_cache.set(user_id, pic)
+                pic = await get_qq_avatar(qid, size=100)
+                pic_cache.set(qid, pic)
         else:
-            pic = await get_qq_avatar(user_id, size=100)
-            pic_cache.set(user_id, pic)
+            pic = await get_qq_avatar(qid, size=100)
+            pic_cache.set(qid, pic)
         pic_temp = crop_center_img(pic, 120, 120)
 
         img = Image.new("RGBA", (180, 180))
@@ -238,24 +246,24 @@ async def draw_all_rank_card_local(
                             sonata_name = ph.get("ph_name", "")
                             break
 
-            # 构建rankInfo
-            rankInfo_item = {
-                "roleDetail": role_detail,
-                "qid": user_id,
-                "uid": role_data.uid,
-                "level": role_detail.role.level,
-                "chain": role_detail.get_chain_num(),
-                "chainName": get_chain_name(role_detail.get_chain_num()),
-                "score": role_data.score,
-                "score_bg": get_total_score_bg(
+            # 构建rankInfo - 使用RankInfo模型
+            rankInfo_item = RankInfo(
+                roleDetail=role_detail,
+                qid=user_id,
+                uid=role_data.uid,
+                level=role_detail.role.level,
+                chain=role_detail.get_chain_num(),
+                chainName=role_detail.get_chain_name(),  # 使用role_detail的get_chain_name方法
+                score=role_data.score,
+                score_bg=get_total_score_bg(
                     role_detail.role.roleName,
                     role_data.score,
                     {}  # 简化处理
                 ) if role_data.score > 0 else "C",
-                "expected_damage": f"{int(role_data.damage):,}" if role_data.damage > 0 else "0",
-                "expected_damage_int": int(role_data.damage),
-                "sonata_name": sonata_name,
-            }
+                expected_damage=f"{int(role_data.damage):,}" if role_data.damage > 0 else "0",
+                expected_damage_int=int(role_data.damage),
+                sonata_name=sonata_name,
+            )
             rankInfoList.append(rankInfo_item)
         except Exception as e:
             logger.exception(f"解析角色数据失败 uid={role_data.uid}:", e)
@@ -285,35 +293,36 @@ async def draw_all_rank_card_local(
                                 sonata_name = ph.get("ph_name", "")
                                 break
 
-                rankInfo_item = {
-                    "roleDetail": role_detail,
-                    "qid": user_id,
-                    "uid": rankInfo.uid,
-                    "level": role_detail.role.level,
-                    "chain": role_detail.get_chain_num(),
-                    "chainName": get_chain_name(role_detail.get_chain_num()),
-                    "score": rankInfo.score,
-                    "score_bg": get_total_score_bg(
+                rankInfo_item = RankInfo(
+                    roleDetail=role_detail,
+                    qid=user_id,
+                    uid=rankInfo.uid,
+                    level=role_detail.role.level,
+                    chain=role_detail.get_chain_num(),
+                    chainName=role_detail.get_chain_name(),  # 使用role_detail的get_chain_name方法
+                    score=rankInfo.score,
+                    score_bg=get_total_score_bg(
                         role_detail.role.roleName,
                         rankInfo.score,
                         {}
                     ) if rankInfo.score > 0 else "C",
-                    "expected_damage": f"{int(rankInfo.damage):,}" if rankInfo.damage > 0 else "0",
-                    "expected_damage_int": int(rankInfo.damage),
-                    "sonata_name": sonata_name,
-                }
+                    expected_damage=f"{int(rankInfo.damage):,}" if rankInfo.damage > 0 else "0",
+                    expected_damage_int=int(rankInfo.damage),
+                    sonata_name=sonata_name,
+                )
                 rankInfoList.append(rankInfo_item)
         except Exception as e:
             logger.exception(f"解析自己的角色数据失败:", e)
 
     # 获取所有头像
-    tasks = [get_avatar(ev, rank["qid"], rank["roleDetail"].role.roleId) for rank in rankInfoList]
+    tasks = [get_avatar(ev, rank.qid, rank.roleDetail.role.roleId) for rank in rankInfoList]
     results = await asyncio.gather(*tasks)
 
     # 绘制每个排行项（完全复制群排行的绘制逻辑）
     for index, temp in enumerate(zip(rankInfoList, results)):
         rank, role_avatar = temp
-        rank_role_detail: RoleDetailData = rank["roleDetail"]
+        rank: RankInfo
+        rank_role_detail: RoleDetailData = rank.roleDetail
         bar_bg = bar.copy()
         bar_star_draw = ImageDraw.Draw(bar_bg)
         bar_bg.paste(role_avatar, (100, 0), role_avatar)
@@ -327,9 +336,9 @@ async def draw_all_rank_card_local(
         # 命座
         info_block = Image.new("RGBA", (46, 20), color=(255, 255, 255, 0))
         info_block_draw = ImageDraw.Draw(info_block)
-        fill = CHAIN_COLOR[rank["chain"]] + (int(0.9 * 255),)
+        fill = CHAIN_COLOR[rank.chain] + (int(0.9 * 255),)
         info_block_draw.rounded_rectangle([0, 0, 46, 20], radius=6, fill=fill)
-        info_block_draw.text((5, 10), f"{rank['chainName']}", "white", waves_font_18, "lm")
+        info_block_draw.text((5, 10), f"{rank.chainName}", "white", waves_font_18, "lm")
         bar_bg.alpha_composite(info_block, (190, 30))
 
         # 等级
@@ -338,16 +347,16 @@ async def draw_all_rank_card_local(
         info_block_draw.rounded_rectangle(
             [0, 0, 60, 20], radius=6, fill=(54, 54, 54, int(0.9 * 255))
         )
-        info_block_draw.text((5, 10), f"Lv.{rank['level']}", "white", waves_font_18, "lm")
+        info_block_draw.text((5, 10), f"Lv.{rank.level}", "white", waves_font_18, "lm")
         bar_bg.alpha_composite(info_block, (240, 30))
 
         # 评分
-        if rank["score"] > 0.0:
-            score_bg = Image.open(TEXT_PATH / f"score_{rank['score_bg']}.png")
+        if rank.score > 0.0:
+            score_bg = Image.open(TEXT_PATH / f"score_{rank.score_bg}.png")
             bar_bg.alpha_composite(score_bg, (320, 2))
             bar_star_draw.text(
                 (466, 42),
-                f"{rank['score']:.2f}",
+                f"{int(rank.score * 100) / 100:.2f}",
                 "white",
                 waves_font_30,
                 "mm",
@@ -355,11 +364,11 @@ async def draw_all_rank_card_local(
             bar_star_draw.text((466, 75), "声骸分数", SPECIAL_GOLD, waves_font_16, "mm")
 
         # 合鸣效果
-        if rank["sonata_name"]:
-            effect_image = await get_attribute_effect(rank["sonata_name"])
+        if rank.sonata_name:
+            effect_image = await get_attribute_effect(rank.sonata_name)
             effect_image = effect_image.resize((50, 50))
             bar_bg.alpha_composite(effect_image, (533, 15))
-            sonata_name = rank["sonata_name"]
+            sonata_name = rank.sonata_name
         else:
             sonata_name = "合鸣效果"
 
@@ -410,7 +419,7 @@ async def draw_all_rank_card_local(
             bar_star_draw.text((870, 55), "等待更新(:", GREY, waves_font_34, "mm")
         else:
             bar_star_draw.text(
-                (870, 45), f"{rank['expected_damage']}", SPECIAL_GOLD, waves_font_34, "mm"
+                (870, 45), f"{rank.expected_damage}", SPECIAL_GOLD, waves_font_34, "mm"
             )
             bar_star_draw.text(
                 (870, 75), f"{damage_title}", "white", waves_font_16, "mm"
@@ -450,15 +459,15 @@ async def draw_all_rank_card_local(
         if rankId is not None and rankId == rank_id:
             uid_color = RED
         bar_star_draw.text(
-            (210, 75), f"{hide_uid(rank['uid'])}", uid_color, waves_font_20, "lm"
+            (210, 75), f"{hide_uid(rank.uid)}", uid_color, waves_font_20, "lm"
         )
 
         # 贴到背景
         card_img.paste(bar_bg, (0, title_h + index * bar_star_h), bar_bg)
 
         if rank_id is not None and rank_id <= (pages * rank_length):
-            total_score += rank["score"]
-            total_damage += rank["expected_damage_int"]
+            total_score += rank.score
+            total_damage += rank.expected_damage_int
 
     # 计算平均值
     if rankId is not None and rankId > (pages * rank_length):
