@@ -14,7 +14,8 @@ from gsuid_core.utils.database.base_models import (
     BaseIDModel,
 )
 from gsuid_core.utils.database.startup import exec_list
-from gsuid_core.webconsole.mount_app import GsAdminModel, PageSchema, site
+exec_list.extend([ 'ALTER TABLE WavesRoleData ADD COLUMN chain_num INTEGER DEFAULT 0' ])
+from ..api.model import RoleDetailData
 
 exec_list.extend(
     [
@@ -380,19 +381,32 @@ class WavesCharHoldRate(BaseIDModel, table=True):
             role_id = char_data.role_id
             char_stats[role_id]["char_name"] = char_data.role_name
 
-            # 从data字段获取共鸣链数据
-            chain_num = 0
-            if char_data.data:
-                # 尝试多种可能的字段名
-                chain_num = (
-                    char_data.data.get("chainNum", 0) or
-                    char_data.data.get("chain", 0) or
-                    char_data.data.get("role", {}).get("chainNum", 0) or
-                    0
-                )
+            # prefer column when available; fallback to JSON data
+            extracted = 0
+            try:
+                extracted = int(getattr(char_data, 'chain_num', 0) or 0)
+            except Exception:
+                extracted = 0
+            if (not extracted) and char_data.data:
+                tmp = 0
+                try:
+                    d = char_data.data or {}
+                    try:
+                        obj = RoleDetailData.model_validate(d)
+                    except Exception:
+                        obj = RoleDetailData(**d)
+                    tmp = int(obj.get_chain_num())
+                except Exception:
+                    # keep 0 if anything fails
+                    tmp = 0
+                # backfill column if differs
+                if hasattr(char_data, 'chain_num') and (getattr(char_data, 'chain_num') or 0) != tmp:
+                    char_data.chain_num = tmp
+                    session.add(char_data)
+                extracted = tmp
 
             char_stats[role_id]["player_count"] += 1
-            char_stats[role_id]["chains"][str(chain_num)] += 1
+            char_stats[role_id]["chains"][str(extracted)] += 1
 
         # 5. 获取现有的所有缓存记录
         existing_stmt = select(cls)
@@ -512,15 +526,12 @@ class WavesAccountInfo(BaseIDModel, table=True):
 
 class WavesRoleData(BaseIDModel, table=True):
     __table_args__ = (
-        # 唯一约束：确保同一个UID下的同一个角色只有一个记录
         UniqueConstraint('uid', 'role_id', name='uq_waves_role_uid_role'),
-        # 复合索引：极大加速“查询某角色按评分排序”的速度
         Index('ix_role_id_score', 'role_id', 'score'),
-        # 复合索引：极大加速“查询某角色按伤害排序”的速度
         Index('ix_role_id_damage', 'role_id', 'damage'),
-        # 允许表结构扩展
         {'extend_existing': True},
     )
+
 
     uid: str = Field(index=True, title="鸣潮UID")
     role_id: str = Field(index=True, title="角色ID")
@@ -528,7 +539,28 @@ class WavesRoleData(BaseIDModel, table=True):
     score: float = Field(default=0.0, index=True, title="评分")
     damage: float = Field(default=0.0, index=True, title="伤害")
 
+    chain_num: int = Field(default=0, index=True, title="Chain Number")
     data: Dict = Field(default={}, sa_column=Column(JSON))
+
+    @staticmethod
+    def _extract_chain_num_from_data(role_info: Dict) -> int:
+        try:
+            if not role_info:
+                return 0
+            val = role_info.get("chainNum")
+            if isinstance(val, int):
+                return max(0, min(6, val))
+            val = role_info.get("chain")
+            if isinstance(val, int):
+                return max(0, min(6, val))
+            role = role_info.get("role", {}) if isinstance(role_info.get("role"), dict) else {}
+            val = role.get("chainNum")
+            if isinstance(val, int):
+                return max(0, min(6, val))
+        except Exception:
+            pass
+        return 0
+
 
     @staticmethod
     def _get_valid_user_filter():
@@ -554,8 +586,7 @@ class WavesRoleData(BaseIDModel, table=True):
         damage_map: Optional[Dict[str, float]] = None 
     ):
         """
-        批量保存角色数据（性能优化版）
-        避免了 N+1 查询问题，一次性拉取旧数据进行比对。
+        批量保存角色数据
         """
         if not role_data_list:
             return
@@ -594,6 +625,7 @@ class WavesRoleData(BaseIDModel, table=True):
                 obj.data = role_info
                 obj.score = current_score
                 obj.damage = current_damage
+                obj.chain_num = cls._extract_chain_num_from_data(role_info)
                 session.add(obj)
             else:
                 # 准备新增对象
@@ -603,7 +635,8 @@ class WavesRoleData(BaseIDModel, table=True):
                     role_name=new_role_name,
                     score=current_score,
                     damage=current_damage,
-                    data=role_info
+                    data=role_info,
+                    chain_num=cls._extract_chain_num_from_data(role_info)
                 )
                 to_add.append(new_obj)
 
