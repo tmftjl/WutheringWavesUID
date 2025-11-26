@@ -9,10 +9,12 @@ from .draw_all_rank_card import draw_all_rank_card
 from .draw_all_rank_card_local import draw_all_rank_card_local
 from .draw_total_rank_card import draw_total_rank
 from .draw_total_rank_card_local import draw_total_rank_local
+from .draw_group_rank_card import draw_group_rank
 
 sv_waves_rank_list = SV("ww角色排行")
 sv_waves_rank_all_list = SV("ww角色总排行", priority=1)
 sv_waves_rank_total_list = SV("ww练度总排行", priority=0)
+sv_waves_rank_group_list = SV("ww群练度排行", priority=0)
 
 
 @sv_waves_rank_list.on_regex("^[\u4e00-\u9fa5]+(?:排行|排名)$", block=True)
@@ -100,6 +102,18 @@ async def send_total_rank_card(bot: Bot, ev: Event):
 
     # 使用本地数据库版本
     im = await draw_total_rank_local(bot, ev, pages)
+
+    if isinstance(im, str):
+        at_sender = True if ev.group_id else False
+        await bot.send(im, at_sender)
+    if isinstance(im, bytes):
+        await bot.send(im)
+
+
+@sv_waves_rank_group_list.on_command(("练度排行", "练度排名", "练度群排行", "练度群排名"), block=True)
+async def send_group_rank_card(bot: Bot, ev: Event):
+    """群练度排行命令"""
+    im = await draw_group_rank(bot, ev)
 
     if isinstance(im, str):
         at_sender = True if ev.group_id else False
