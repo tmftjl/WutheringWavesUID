@@ -247,7 +247,7 @@ async def draw_pic(roleId):
 
 
 @timed_async_cache(
-    expiration=3600,
+    expiration=0,
     condition=lambda x: x,
 )
 async def get_char_hold_rate_data() -> Dict:
