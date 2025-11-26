@@ -173,4 +173,21 @@ CONFIG_DEFAULT: Dict[str, GSC] = {
         "验证码提供方appkey",
         "",
     ),
+    "EnableHoldRateCache": GsBoolConfig(
+        "启用角色持有率缓存",
+        "启用角色持有率缓存功能，开启后会每天定时更新持有率数据",
+        False,
+    ),
+    "HoldRateUpdateHour": GsIntConfig(
+        "持有率更新时间-小时（0-23）",
+        "角色持有率缓存的更新时间（小时），建议设置在凌晨用户较少活跃时段",
+        4,
+        23,
+    ),
+    "HoldRateUpdateMinute": GsIntConfig(
+        "持有率更新时间-分钟（0-59）",
+        "角色持有率缓存的更新时间（分钟）",
+        0,
+        59,
+    ),
 }

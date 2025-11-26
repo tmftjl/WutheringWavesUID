@@ -3,17 +3,15 @@ import copy
 from pathlib import Path
 from typing import Dict, Union
 
-import httpx
 from PIL import Image, ImageDraw
 
 from gsuid_core.logger import logger
 from gsuid_core.models import Event
 from gsuid_core.utils.image.convert import convert_img
 
-from ..utils.api.wwapi import GET_HOLD_RATE_URL
 from ..utils.ascension.char import get_char_model
 from ..utils.char_info_utils import get_all_role_detail_info_list
-from ..utils.database.models import WavesBind
+from ..utils.database.models import WavesBind, WavesCharHoldRate
 from ..utils.fonts.waves_fonts import (
     waves_font_20,
     waves_font_24,
@@ -36,7 +34,6 @@ from ..utils.resource.constant import (
     NORMAL_LIST_IDS,
     SPECIAL_CHAR_NAME,
 )
-from ..utils.util import timed_async_cache
 
 TEXT_PATH = Path(__file__).parent / "texture2d"
 bar1 = Image.open(TEXT_PATH / "bar1.png")
@@ -248,22 +245,36 @@ async def draw_pic(roleId):
     return img
 
 
-@timed_async_cache(
-    expiration=3600,
-    condition=lambda x: x,
-)
 async def get_char_hold_rate_data() -> Dict:
-    """获取角色持有率数据"""
+    """获取角色持有率数据（从本地缓存）"""
     try:
-        async with httpx.AsyncClient() as client:
-            response = await client.get(GET_HOLD_RATE_URL, timeout=10)
-            response.raise_for_status()
-            if response.status_code == 200:
-                return response.json().get("data", {})
+        # 从缓存表读取
+        cache_records = await WavesCharHoldRate.get_all_hold_rates()
+
+        if not cache_records:
+            logger.warning("角色持有率缓存为空，请执行 'ww更新持有率缓存' 命令")
+            return {}
+
+        # 获取总玩家数（取第一条记录的值，所有记录应该相同）
+        total_player_count = cache_records[0].total_players if cache_records else 0
+
+        # 转换为接口格式
+        char_hold_rate = []
+        for record in cache_records:
+            char_hold_rate.append({
+                "char_id": record.char_id,
+                "player_count": record.hold_count,
+                "hold_rate": record.hold_rate,
+                "chain_hold_rate": record.chain_distribution or {}
+            })
+
+        return {
+            "total_player_count": total_player_count,
+            "char_hold_rate": char_hold_rate
+        }
     except Exception as e:
         logger.error(f"获取角色持有率数据失败: {e}")
-
-    return {}
+        return {}
 
 
 async def get_group_char_hold_rate_data(group_id: str) -> Dict:
@@ -376,10 +387,10 @@ async def get_char_hold_rate_img(ev: Event, group_id: str = "") -> Union[bytes, 
     if group_id:
         data = await get_group_char_hold_rate_data(group_id)
         if not data:
-            return "群组持有率数据获取失败，请稍后再试"
+            return "群组持有率数据获取失败，请确保群内有用户绑定UID"
     else:
         data = await get_char_hold_rate_data()
         if not data:
-            return "鸣潮角色持有率数据获取失败，请稍后再试"
+            return "角色持有率数据获取失败\n请先执行 'ww更新持有率缓存' 命令初始化数据"
 
     return await new_draw_char_hold_rate(ev, data, group_id=group_id)

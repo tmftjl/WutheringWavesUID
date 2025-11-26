@@ -1,6 +1,7 @@
-from typing import Any, Dict, List, Optional, Type, TypeVar
+from typing import Any, Dict, List, Optional, Type, TypeVar, Tuple
+import time
 
-from sqlalchemy import delete, null, update, Column, JSON, UniqueConstraint
+from sqlalchemy import delete, null, update, Column, JSON, UniqueConstraint, Index, func, case
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.sql import and_, or_
 from sqlmodel import Field, col, select
@@ -292,6 +293,167 @@ class WavesPush(Push, table=True):
     resin_value: Optional[int] = Field(title="体力阈值", default=180)
     resin_is_push: Optional[str] = Field(title="体力是否已推送", default="off")
 
+
+class WavesCharHoldRate(BaseIDModel, table=True):
+    """角色持有率缓存表"""
+    __table_args__ = (
+        Index('ix_char_hold_rate_char_id', 'char_id'),
+        Index('ix_char_hold_rate_update_time', 'update_time'),
+        {'extend_existing': True},
+    )
+
+    char_id: str = Field(index=True, title="角色ID")
+    char_name: str = Field(default="", title="角色名称")
+    total_players: int = Field(default=0, title="总玩家数")
+    hold_count: int = Field(default=0, title="持有人数")
+    hold_rate: float = Field(default=0.0, title="持有率%")
+    chain_distribution: Dict = Field(default_factory=dict, sa_column=Column(JSON), title="共鸣链分布")
+    update_time: int = Field(default=0, title="更新时间戳")
+
+    @classmethod
+    @with_session
+    async def get_all_hold_rates(
+        cls,
+        session: AsyncSession
+    ) -> List["WavesCharHoldRate"]:
+        """获取所有角色持有率"""
+        result = await session.execute(select(cls).order_by(cls.hold_rate.desc()))
+        return list(result.scalars().all())
+
+    @classmethod
+    @with_session
+    async def get_hold_rate_by_char_id(
+        cls,
+        session: AsyncSession,
+        char_id: str
+    ) -> Optional["WavesCharHoldRate"]:
+        """获取指定角色的持有率"""
+        result = await session.execute(
+            select(cls).where(cls.char_id == char_id)
+        )
+        return result.scalars().first()
+
+    @classmethod
+    @with_session
+    async def update_all_hold_rates(
+        cls,
+        session: AsyncSession
+    ) -> int:
+        """
+        更新所有角色持有率（从WavesRoleData统计）
+        返回更新的角色数量
+        """
+        from collections import defaultdict
+
+        # 1. 获取有效用户过滤条件
+        valid_user_filter = and_(
+            or_(WavesUser.status == null(), WavesUser.status == ""),
+            WavesUser.cookie != null(),
+            WavesUser.cookie != ""
+        )
+
+        # 2. 统计总有效用户数
+        total_users_stmt = select(func.count(func.distinct(WavesUser.uid))).where(
+            valid_user_filter
+        )
+        total_player_count = (await session.execute(total_users_stmt)).scalar() or 0
+
+        if total_player_count == 0:
+            return 0
+
+        # 3. 获取所有有效用户的角色数据
+        char_stmt = select(WavesRoleData).join(
+            WavesUser, WavesUser.uid == WavesRoleData.uid
+        ).where(valid_user_filter)
+
+        result = await session.execute(char_stmt)
+        all_chars = result.scalars().all()
+
+        # 4. 统计每个角色的持有情况
+        char_stats = defaultdict(lambda: {
+            "char_name": "",
+            "player_count": 0,
+            "chains": {str(i): 0 for i in range(7)}
+        })
+
+        for char_data in all_chars:
+            role_id = char_data.role_id
+            char_stats[role_id]["char_name"] = char_data.role_name
+
+            # 从data字段获取共鸣链数据
+            chain_num = 0
+            if char_data.data:
+                # 尝试多种可能的字段名
+                chain_num = (
+                    char_data.data.get("chainNum", 0) or
+                    char_data.data.get("chain", 0) or
+                    char_data.data.get("role", {}).get("chainNum", 0) or
+                    0
+                )
+
+            char_stats[role_id]["player_count"] += 1
+            char_stats[role_id]["chains"][str(chain_num)] += 1
+
+        # 5. 获取现有的所有缓存记录
+        existing_stmt = select(cls)
+        existing_result = await session.execute(existing_stmt)
+        existing_records = {r.char_id: r for r in existing_result.scalars().all()}
+
+        # 6. 更新或插入数据
+        current_time = int(time.time())
+        updated_count = 0
+
+        for char_id, stats in char_stats.items():
+            player_count = stats["player_count"]
+            hold_rate = round(player_count / total_player_count * 100, 2)
+
+            # 计算共鸣链分布百分比
+            chain_distribution = {}
+            for chain, count in stats["chains"].items():
+                if count > 0:
+                    chain_distribution[chain] = round(count / player_count * 100, 2)
+
+            # 判断是更新还是插入
+            if char_id in existing_records:
+                # 更新现有记录
+                record = existing_records[char_id]
+                record.char_name = stats["char_name"]
+                record.total_players = total_player_count
+                record.hold_count = player_count
+                record.hold_rate = hold_rate
+                record.chain_distribution = chain_distribution
+                record.update_time = current_time
+                session.add(record)
+            else:
+                # 插入新记录
+                new_record = cls(
+                    char_id=char_id,
+                    char_name=stats["char_name"],
+                    total_players=total_player_count,
+                    hold_count=player_count,
+                    hold_rate=hold_rate,
+                    chain_distribution=chain_distribution,
+                    update_time=current_time
+                )
+                session.add(new_record)
+
+            updated_count += 1
+
+        await session.commit()
+        return updated_count
+
+    @classmethod
+    @with_session
+    async def get_last_update_time(
+        cls,
+        session: AsyncSession
+    ) -> Optional[int]:
+        """获取最后更新时间"""
+        result = await session.execute(
+            select(func.max(cls.update_time))
+        )
+        return result.scalar()
+
 class WavesAccountInfo(BaseIDModel, table=True):
     __table_args__: Dict[str, Any] = {"extend_existing": True}
 
@@ -368,6 +530,19 @@ class WavesRoleData(BaseIDModel, table=True):
 
     data: Dict = Field(default={}, sa_column=Column(JSON))
 
+    @staticmethod
+    def _get_valid_user_filter():
+        """
+        统一获取有效用户的过滤条件：
+        用户状态正常（空或None） 且 Cookie有效（非空且非None）
+        """
+        # 注意：这里需要确保 WavesUser 类已正确导入
+        return and_(
+            or_(WavesUser.status == null(), WavesUser.status == ""),
+            WavesUser.cookie != null(),
+            WavesUser.cookie != ""
+        )
+
     @classmethod
     @with_session
     async def save_role_data(
@@ -375,8 +550,8 @@ class WavesRoleData(BaseIDModel, table=True):
         session: AsyncSession, 
         uid: str, 
         role_data_list: List[Dict],
-        scores_map: Dict[str, float] = {}, 
-        damage_map: Dict[str, float] = {} 
+        scores_map: Optional[Dict[str, float]] = None, 
+        damage_map: Optional[Dict[str, float]] = None 
     ):
         """
         批量保存角色数据（性能优化版）
@@ -384,6 +559,12 @@ class WavesRoleData(BaseIDModel, table=True):
         """
         if not role_data_list:
             return
+
+        # 修复点 1：处理可变默认参数
+        if scores_map is None:
+            scores_map = {}
+        if damage_map is None:
+            damage_map = {}
 
         # 1. 一次性查出该用户所有已存在的角色数据
         stmt = select(cls).where(cls.uid == uid)
@@ -504,12 +685,8 @@ class WavesRoleData(BaseIDModel, table=True):
     ) -> Tuple[List["WavesRoleData"], int]:
         """获取全局特定角色的排行数据（只包含有效CK的用户）"""
         
-        # 构建有效用户的过滤条件
-        valid_user_filter = and_(
-            or_(WavesUser.status == null(), WavesUser.status == ""),
-            WavesUser.cookie != null(),
-            WavesUser.cookie != ""
-        )
+        # 修复点 4：使用统一的过滤条件
+        valid_user_filter = cls._get_valid_user_filter()
 
         # 基础查询：连接 Users 表
         base_query = select(cls).join(WavesUser, WavesUser.uid == cls.uid).where(
@@ -558,13 +735,10 @@ class WavesRoleData(BaseIDModel, table=True):
         if not role_data:
             return None
 
-        # 2. 确认此UID为有效CK用户
-        valid_user_filter = and_(
-            or_(WavesUser.status == null(), WavesUser.status == ""),
-            WavesUser.cookie != null(),
-            WavesUser.cookie != ""
-        )
+        # 修复点 4：使用统一的过滤条件
+        valid_user_filter = cls._get_valid_user_filter()
         
+        # 2. 确认此UID为有效CK用户
         user_check_stmt = select(func.count()).select_from(WavesUser).where(
             WavesUser.uid == uid,
             valid_user_filter
@@ -601,11 +775,8 @@ class WavesRoleData(BaseIDModel, table=True):
         """获取练度总排行"""
         from collections import defaultdict
 
-        valid_user_filter = and_(
-            or_(WavesUser.status == null(), WavesUser.status == ""),
-            WavesUser.cookie != null(),
-            WavesUser.cookie != ""
-        )
+        # 修复点 4：使用统一的过滤条件
+        valid_user_filter = cls._get_valid_user_filter()
 
         # 聚合子查询：计算每个有效用户的总分和角色数
         subquery = (
@@ -707,11 +878,8 @@ class WavesRoleData(BaseIDModel, table=True):
     ) -> Optional[int]:
         """获取某个用户在练度总排行中的位置"""
 
-        valid_user_filter = and_(
-            or_(WavesUser.status == null(), WavesUser.status == ""),
-            WavesUser.cookie != null(),
-            WavesUser.cookie != ""
-        )
+        # 修复点 4：使用统一的过滤条件
+        valid_user_filter = cls._get_valid_user_filter()
 
         # 1. 检查用户是否有效
         valid_exist = (
@@ -850,7 +1018,6 @@ class WavesRoleData(BaseIDModel, table=True):
                 damage_map[role_id] = 0.0
 
         return scores_map, damage_map
-
 @site.register_admin
 class WavesBindAdmin(GsAdminModel):
     pk_name = "id"
