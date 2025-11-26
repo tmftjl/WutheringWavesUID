@@ -1003,7 +1003,6 @@ class WavesRoleData(BaseIDModel, table=True):
 
         return scores_map, damage_map
 
-from gsuid_core.utils.admin import GsAdminModel, PageSchema, site
 @site.register_admin
 class WavesBindAdmin(GsAdminModel):
     pk_name = "id"
