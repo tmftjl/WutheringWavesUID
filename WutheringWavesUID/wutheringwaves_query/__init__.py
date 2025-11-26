@@ -101,14 +101,10 @@ async def handle_slash_appear_rate(bot: Bot, ev: Event):
 
 # 手动更新持有率缓存
 @sv_char_hold_rate.on_command(
-    ("更新持有率缓存", "刷新持有率缓存"),
+    ("更新持有率", "刷新持有率"),
     block=True,
 )
 async def handle_update_hold_rate_cache(bot: Bot, ev: Event):
-    # 可以添加权限检查
-    if not ev.group_id:
-        return await bot.send("请在群聊中使用")
-
     await bot.send("开始更新持有率缓存，请稍候...")
     result = await manual_update_hold_rate()
     await bot.send(result)
