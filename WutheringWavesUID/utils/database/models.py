@@ -636,6 +636,7 @@ class WavesRoleData(BaseIDModel, table=True):
         return {str(r.role_id): (r.data or {}) for r in rows}
 
     @classmethod
+    @with_session
     async def get_group_all_data(
         cls,
         uid_list: List[str],
