@@ -155,7 +155,7 @@ async def save_card_info(
     try:
         await WavesRoleData.save_role_data(
             uid=uid,
-            role_data_list=final_save_data,
+            final_role_list=final_save_data,
             scores_map=scores_map,
             damage_map=damage_map
         )
