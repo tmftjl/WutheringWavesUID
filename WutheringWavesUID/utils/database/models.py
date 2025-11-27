@@ -636,30 +636,27 @@ class WavesRoleData(BaseIDModel, table=True):
         return {str(r.role_id): (r.data or {}) for r in rows}
 
     @classmethod
-    @with_session
-    async def get_role_rank_by_group(
+    async def get_group_all_data(
         cls,
-        session: AsyncSession,
         uid_list: List[str],
         role_id: str,
         rank_type: str = "score",  # "score" 或 "damage"
-        limit: int = 20
     ) -> List["WavesRoleData"]:
-        """获取群内特定角色的排行数据"""
-        stmt = select(cls).where(
-            cls.uid.in_(uid_list),
-            cls.role_id == role_id
-        )
+        """
+        获取群内该角色所有数据，直接在数据库层完成排序
+        """
+        async with get_session() as session:
+            stmt = select(cls).where(
+                cls.uid.in_(uid_list),
+                cls.role_id == role_id
+            )
+            if rank_type == "damage":
+                stmt = stmt.order_by(cls.damage.desc(), cls.score.desc())
+            else:
+                stmt = stmt.order_by(cls.score.desc(), cls.damage.desc())
 
-        if rank_type == "damage":
-            stmt = stmt.order_by(cls.damage.desc(), cls.score.desc())
-        else:  # 默认按评分排序
-            stmt = stmt.order_by(cls.score.desc(), cls.damage.desc())
-
-        stmt = stmt.limit(limit)
-        result = await session.execute(stmt)
-        rows = result.scalars().all()
-        return list(rows)
+            result = await session.execute(stmt)
+            return list(result.scalars().all())
 
     @classmethod
     @with_session

@@ -108,13 +108,13 @@ async def send_total_rank_card(bot: Bot, ev: Event):
         await bot.send(im)
 
 
-@sv_waves_rank_group_list.on_command(("练度排行", "练度排名", "练度群排行", "练度群排名"), block=True)
-async def send_group_rank_card(bot: Bot, ev: Event):
-    """群练度排行命令"""
-    im = await draw_group_rank(bot, ev)
+# @sv_waves_rank_group_list.on_command(("练度排行", "练度排名", "练度群排行", "练度群排名"), block=True)
+# async def send_group_rank_card(bot: Bot, ev: Event):
+#     """群练度排行命令"""
+#     im = await draw_group_rank(bot, ev)
 
-    if isinstance(im, str):
-        at_sender = True if ev.group_id else False
-        await bot.send(im, at_sender)
-    if isinstance(im, bytes):
-        await bot.send(im)
+#     if isinstance(im, str):
+#         at_sender = True if ev.group_id else False
+#         await bot.send(im, at_sender)
+#     if isinstance(im, bytes):
+#         await bot.send(im)

@@ -22,7 +22,7 @@ from ..utils.calculate import (
 )
 from ..utils.char_info_utils import get_all_role_detail_info_list
 from ..utils.damage.abstract import DamageRankRegister
-from ..utils.database.models import WavesBind, WavesUser
+from ..utils.database.models import WavesBind, WavesUser, WavesRoleData
 from ..utils.fonts.waves_fonts import (
     waves_font_14,
     waves_font_16,
@@ -82,161 +82,36 @@ class RankInfo(BaseModel):
     sonata_name: str  # 合鸣效果
 
 
-async def get_one_rank_info(user_id, uid, role_detail, rankDetail):
-    equipPhantomList = role_detail.phantomData.equipPhantomList
-
-    calc: WuWaCalc = WuWaCalc(role_detail)
-    calc.phantom_pre = calc.prepare_phantom()
-    calc.phantom_card = calc.enhance_summation_phantom_value(calc.phantom_pre)
-    calc.calc_temp = get_calc_map(
-        calc.phantom_card,
-        role_detail.role.roleName,
-        role_detail.role.roleId,
-    )
-
-    # 评分
-    phantom_score = 0
-    # calc_temp = get_calc_map(phantom_sum_value, role_detail.role.roleName)
-    for i, _phantom in enumerate(equipPhantomList):
-        if _phantom and _phantom.phantomProp:
-            props = _phantom.get_props()
-            _score, _bg = calc_phantom_score(
-                role_detail.role.roleId, props, _phantom.cost, calc.calc_temp
-            )
-            phantom_score += _score
-
-    if phantom_score == 0:
-        return
-
-    phantom_score = round(phantom_score, 2)
-    phantom_bg = get_total_score_bg(
-        role_detail.role.roleName, phantom_score, calc.calc_temp
-    )
-
-    calc.role_card = calc.enhance_summation_card_value(calc.phantom_card)
-    calc.damageAttribute = calc.card_sort_map_to_attribute(calc.role_card)
-
-    if rankDetail:
-        crit_damage, expected_damage = rankDetail["func"](
-            calc.damageAttribute, role_detail
-        )
-    else:
-        expected_damage = "0"
-
+def db_row_to_rank_info(row: WavesRoleData, qid: str) -> RankInfo:
+    """将数据库行数据转换为 RankInfo 对象"""
+    role_detail = RoleDetailData.parse_obj(row.data)
     sonata_name = ""
-    ph_detail = calc.phantom_card.get("ph_detail", [])
-    if isinstance(ph_detail, list):
+    if role_detail.phantomData and role_detail.phantomData.equipPhantomList:
+        calc = WuWaCalc(role_detail)
+        calc.phantom_pre = calc.prepare_phantom()
+        phantom_card = calc.enhance_summation_phantom_value(calc.phantom_pre)
+        ph_detail = phantom_card.get("ph_detail", [])
         for ph in ph_detail:
-            if ph.get("ph_num") == 5:
+            if ph.get("ph_num") == 5 or ph.get("isFull"):
                 sonata_name = ph.get("ph_name", "")
                 break
 
-            if ph.get("isFull"):
-                sonata_name = ph.get("ph_name", "")
-                break
+    # 获取评分背景 (S/A/B/C)
+    score_bg = get_total_score_bg(role_detail.role.roleName, row.score, {})
 
-    rankInfo = RankInfo(
-        **{
-            "roleDetail": role_detail,
-            "qid": user_id,
-            "uid": uid,
-            "level": role_detail.role.level,
-            "chain": role_detail.get_chain_num(),
-            "chainName": role_detail.get_chain_name(),
-            "score": round(int(phantom_score * 100) / 100, ndigits=2),
-            "score_bg": phantom_bg,
-            "expected_damage": expected_damage,
-            "expected_damage_int": int(expected_damage.replace(",", "")),
-            "sonata_name": sonata_name,
-        }
+    return RankInfo(
+        roleDetail=role_detail,
+        qid=qid,
+        uid=row.uid,
+        level=role_detail.role.level,
+        chain=role_detail.get_chain_num(),
+        chainName=role_detail.get_chain_name(),
+        score=row.score,
+        score_bg=score_bg,
+        expected_damage=f"{int(row.damage):,}",
+        expected_damage_int=int(row.damage),
+        sonata_name=sonata_name,
     )
-    return rankInfo
-
-
-async def find_role_detail(
-    uid: str, char_id: Union[int, str, List[str], List[int]]
-) -> Optional[RoleDetailData]:
-    role_details = await get_all_role_detail_info_list(uid)
-    if role_details is None:
-        return None
-
-    # 将char_id转换为字符串列表进行匹配
-    if isinstance(char_id, (int, str)):
-        char_id_list = [str(char_id)]
-    else:
-        char_id_list = [str(cid) for cid in char_id]
-
-    # 使用生成器来进行过滤
-    return next(
-        (role for role in role_details if str(role.role.roleId) in char_id_list), None
-    )
-
-
-async def get_rank_info_for_user(
-    user: WavesBind,
-    char_id,
-    find_char_id,
-    rankDetail,
-    tokenLimitFlag,
-    wavesTokenUsersMap,
-):
-    rankInfoList = []
-    if not user.uid:
-        return rankInfoList
-
-    tasks = [find_role_detail(uid, find_char_id) for uid in user.uid.split("_")]
-    role_details = await asyncio.gather(*tasks)
-
-    for uid, role_detail in zip(user.uid.split("_"), role_details):
-        if (
-            tokenLimitFlag
-            and (
-                user.user_id,
-                uid,
-            )
-            not in wavesTokenUsersMap
-        ):
-            continue
-        if not role_detail:
-            continue
-        if not role_detail.phantomData or not role_detail.phantomData.equipPhantomList:
-            continue
-
-        rankInfo = await get_one_rank_info(user.user_id, uid, role_detail, rankDetail)
-        if not rankInfo:
-            continue
-        rankInfoList.append(rankInfo)
-
-    return rankInfoList
-
-
-async def get_all_rank_info(
-    users: List[WavesBind],
-    char_id,
-    find_char_id,
-    rankDetail,
-    tokenLimitFlag,
-    wavesTokenUsersMap,
-):
-    semaphore = asyncio.Semaphore(50)
-
-    async def process_user(user):
-        async with semaphore:
-            return await get_rank_info_for_user(
-                user,
-                char_id,
-                find_char_id,
-                rankDetail,
-                tokenLimitFlag,
-                wavesTokenUsersMap,
-            )
-
-    tasks = [process_user(user) for user in users]
-    results = await asyncio.gather(*tasks)
-
-    # Flatten the results list
-    rankInfoList = [rank_info for result in results for rank_info in result]
-    return rankInfoList
 
 
 async def get_waves_token_condition(ev):
@@ -286,11 +161,11 @@ async def draw_rank_img(
         find_char_id = char_id
 
     start_time = time.time()
-    logger.info(f"[get_rank_info_for_user] start: {start_time}")
+    logger.info(f"[draw_rank_img] start processing for group: {ev.group_id}")
     # 获取群里的所有拥有该角色人的数据
     users = await WavesBind.get_group_all_uid(ev.group_id)
-
     tokenLimitFlag, wavesTokenUsersMap = await get_waves_token_condition(ev)
+
     if not users:
         msg = []
         msg.append(f"[鸣潮] 群【{ev.group_id}】暂无【{char}】面板")
@@ -301,67 +176,51 @@ async def draw_rank_img(
             )
         msg.append("")
         return "\n".join(msg)
-
+    uid_list = [user.uid for user in users]
+    # 获取自己的 UID
     self_uid = None
-    role_detail = None
-    try:
-        self_uid = await WavesBind.get_uid_by_game(ev.user_id, ev.bot_id)
-        if self_uid:
-            role_detail = await find_role_detail(self_uid, find_char_id)
-            if role_detail:
-                char_id = str(role_detail.role.roleId)
-    except Exception as _:
-        pass
+    self_uid = await WavesBind.get_uid_by_game(ev.user_id, ev.bot_id)
 
-    damage_title = (rankDetail and rankDetail["title"]) or "无"
-    rankInfoList = await get_all_rank_info(
-        list(users),
-        char_id,
-        find_char_id,
-        rankDetail,
-        tokenLimitFlag,
-        wavesTokenUsersMap,
+    # 数据库直接获取排序好的数据
+    db_rank_type = "damage" if rank_type == "伤害" else "score"
+    all_rows = await WavesRoleData.get_group_all_data(
+        uid_list=uid_list,
+        role_id=str(find_char_id),
+        rank_type=db_rank_type
     )
-    if len(rankInfoList) == 0:
+
+    if not all_rows:
         msg = []
         msg.append(f"[鸣潮] 群【{ev.group_id}】暂无【{char}】面板")
         msg.append(f"请使用【{PREFIX}刷新面板】后再使用此功能！")
-        if tokenLimitFlag:
-            msg.append(
-                f"当前排行开启了登录验证，请使用命令【{PREFIX}登录】登录后此功能！"
-            )
-        msg.append("")
         return "\n".join(msg)
 
-    if rank_type == "评分":
-        rankInfoList.sort(
-            key=lambda i: (i.score, i.expected_damage_int, i.level, i.chain),
-            reverse=True,
-        )
-    else:
-        rankInfoList.sort(
-            key=lambda i: (i.expected_damage_int, i.score, i.level, i.chain),
-            reverse=True,
-        )
+    # 转换为 RankInfo 并处理排名
+    rankInfoList = []
+    self_real_index = -1
+    for index, row in enumerate(all_rows):
+        qid = uid_map.get(row.uid)
+        if not qid:
+            continue
+        rank_info = db_row_to_rank_info(row, qid)
+        rankInfoList.append(rank_info)
+        if self_uid and row.uid == self_uid:
+            self_real_index = len(rankInfoList) - 1
+    display_list = rankInfoList[:rank_length]
 
     rankId = None
-    rankInfo = None
+    if self_real_index != -1:
+        rankId = self_real_index + 1
+        if self_real_index >= rank_length:
+            display_list.append(rankInfoList[self_real_index])
 
-    if not rankId:
-        rankId, rankInfo = next(
-            (
-                (rankId, rankInfo)
-                for rankId, rankInfo in enumerate(rankInfoList, start=1)
-                if rankInfo.uid == self_uid and ev.user_id == rankInfo.qid
-            ),
-            (None, None),
-        )
+    totalNum = len(display_list)
+    
+    # 计算平均分时的数量（不包含追加在最后的自己，以免拉低平均分）
+    calc_avg_num = totalNum
+    if rankId and rankId > rank_length:
+        calc_avg_num -= 1
 
-    rankInfoList = rankInfoList[:rank_length]
-    if rankId and rankInfo and rankId > rank_length:
-        rankInfoList.append(rankInfo)
-
-    totalNum = len(rankInfoList)
     title_h = 500
     bar_star_h = 110
     h = title_h + totalNum * bar_star_h + 80
@@ -372,20 +231,22 @@ async def draw_rank_img(
     total_score = 0
     total_damage = 0
 
+    # 批量获取头像
     tasks = [
-        get_avatar(ev, rank.qid, rank.roleDetail.role.roleId) for rank in rankInfoList
+        get_avatar(ev, rank.qid, rank.roleDetail.role.roleId) for rank in display_list
     ]
-    results = await asyncio.gather(*tasks)
+    avatars = await asyncio.gather(*tasks)
 
-    for index, temp in enumerate(zip(rankInfoList, results)):
+    for index, temp in enumerate(zip(display_list, avatars)):
         rank, role_avatar = temp
         rank: RankInfo
         rank_role_detail: RoleDetailData = rank.roleDetail
+        
         bar_bg = bar.copy()
         bar_star_draw = ImageDraw.Draw(bar_bg)
-        # role_avatar = await get_avatar(ev, rank.qid, role_detail.role.roleId)
         bar_bg.paste(role_avatar, (100, 0), role_avatar)
 
+        # 属性图标
         role_attribute = await get_attribute(
             rank_role_detail.role.attributeName or "导电", is_simple=True
         )
@@ -438,7 +299,6 @@ async def draw_rank_img(
 
         # 武器
         weapon_bg_temp = Image.new("RGBA", (600, 300))
-
         weaponData: WeaponData = rank_role_detail.weaponData
         weapon_icon = await get_square_weapon(weaponData.weapon.weaponId)
         weapon_icon = crop_center_img(weapon_icon, 110, 110)
@@ -502,21 +362,24 @@ async def draw_rank_img(
             rank_draw.text(draw, f"{rank_id}", "white", waves_font_34, "mm")
             bar_bg.alpha_composite(info_rank, dest)
 
-        rank_id = index + 1
-        if rankId is not None and rank_id > rank_length:
-            rank_id = rankId
+        # 计算显示的排名
+        current_display_rank = index + 1
+        # 如果是列表最后一个，且真实排名 > 20，则显示真实排名
+        if index == len(display_list) - 1 and rankId and rankId > rank_length:
+            current_display_rank = rankId
 
-        if rank_id is not None and rank_id > 999:
+        if current_display_rank > 999:
             draw_rank_id("999+", size=(100, 50), draw=(50, 24), dest=(10, 30))
-        elif rank_id is not None and rank_id > 99:
-            draw_rank_id(rank_id, size=(75, 50), draw=(37, 24), dest=(25, 30))
+        elif current_display_rank > 99:
+            draw_rank_id(current_display_rank, size=(75, 50), draw=(37, 24), dest=(25, 30))
         else:
-            draw_rank_id(rank_id or 0, size=(50, 50), draw=(24, 24), dest=(40, 30))
+            draw_rank_id(current_display_rank, size=(50, 50), draw=(24, 24), dest=(40, 30))
 
-        # uid
+        # uid (高亮自己)
         uid_color = "white"
-        if rankId is not None and rankId == rank_id:
+        if self_uid and rank.uid == self_uid:
             uid_color = RED
+            
         bar_star_draw.text(
             (210, 75), f"{hide_uid(rank.uid)}", uid_color, waves_font_20, "lm"
         )
@@ -524,15 +387,13 @@ async def draw_rank_img(
         # 贴到背景
         card_img.paste(bar_bg, (0, title_h + index * bar_star_h), bar_bg)
 
-        if rank_id is not None and rank_id <= rank_length:
+        # 累计分数（仅限参与平均计算的，即Top20）
+        if index < calc_avg_num:
             total_score += rank.score
             total_damage += rank.expected_damage_int
 
-    if rankId is not None and rankId > rank_length:
-        totalNum -= 1
-
-    avg_score = f"{total_score / totalNum:.1f}" if totalNum != 0 else "0"
-    avg_damage = f"{total_damage / totalNum:,.0f}" if totalNum != 0 else "0"
+    avg_score = f"{total_score / calc_avg_num:.1f}" if calc_avg_num != 0 else "0"
+    avg_damage = f"{total_damage / calc_avg_num:,.0f}" if calc_avg_num != 0 else "0"
 
     title = TITLE_I.copy()
     title_draw = ImageDraw.Draw(title)
@@ -578,7 +439,7 @@ async def draw_rank_img(
     card_img = add_footer(card_img)
     card_img = await convert_img(card_img)
 
-    logger.info(f"[get_rank_info_for_user] end: {time.time() - start_time}")
+    logger.info(f"[draw_rank_img] end: {time.time() - start_time}")
     return card_img
 
 
