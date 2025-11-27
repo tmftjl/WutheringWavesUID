@@ -553,7 +553,7 @@ class WavesRoleData(BaseIDModel, table=True):
 
     @classmethod
     @with_session
-    async def sync_role_data(
+    async def save_role_data(
         cls, 
         session: AsyncSession, 
         uid: str, 
