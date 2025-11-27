@@ -639,6 +639,7 @@ class WavesRoleData(BaseIDModel, table=True):
     @with_session
     async def get_group_all_data(
         cls,
+        session: AsyncSession,
         uid_list: List[str],
         role_id: str,
         rank_type: str = "score",  # "score" 或 "damage"
