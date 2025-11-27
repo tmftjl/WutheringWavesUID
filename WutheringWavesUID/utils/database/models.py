@@ -1,10 +1,11 @@
-from typing import Any, Dict, List, Optional, Type, TypeVar, Tuple
 import time
+from collections import defaultdict
+from typing import Any, Dict, List, Optional, Type, TypeVar, Tuple
 
-from sqlalchemy import delete, null, update, Column, JSON, UniqueConstraint, Index, func, case
+from sqlalchemy import delete, null, update, Column, JSON, UniqueConstraint, Index, func, case, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.sql import and_, or_
-from sqlmodel import Field, col, select
+from sqlmodel import Field, col
 
 from gsuid_core.utils.database.base_models import (
     Bind,
@@ -14,8 +15,9 @@ from gsuid_core.utils.database.base_models import (
     BaseIDModel,
 )
 from gsuid_core.utils.database.startup import exec_list
-from ..api.model import RoleDetailData
 from gsuid_core.webconsole.mount_app import GsAdminModel, PageSchema, site
+from ..api.model import RoleDetailData
+
 # --- 数据库迁移补充 ---
 exec_list.extend(
     []
@@ -110,6 +112,7 @@ class WavesBind(Bind, table=True):
                 **{"uid": new_uid, "group_id": new_group_id},
             )
         return res
+
 
 class WavesUser(User, table=True):
     __table_args__: Dict[str, Any] = {"extend_existing": True}
@@ -274,6 +277,7 @@ class WavesUser(User, table=True):
         result = await session.execute(sql)
         return result.rowcount
 
+
 class WavesPush(Push, table=True):
     __table_args__: Dict[str, Any] = {"extend_existing": True}
     bot_id: str = Field(title="平台")
@@ -285,6 +289,64 @@ class WavesPush(Push, table=True):
     )
     resin_value: Optional[int] = Field(title="体力阈值", default=180)
     resin_is_push: Optional[str] = Field(title="体力是否已推送", default="off")
+
+
+class WavesAccountInfo(BaseIDModel, table=True):
+    __table_args__: Dict[str, Any] = {"extend_existing": True}
+
+    uid: str = Field(index=True, unique=True, title="鸣潮UID")
+    name: str = Field(default="", title="账号昵称")
+    level: int = Field(default=0, title="账号等级")
+    world_level: int = Field(default=0, title="世界等级")
+    create_time: int = Field(default=0, title="创建时间")  # 在此用作最后更新时间
+
+    @classmethod
+    @with_session
+    async def save_account_info(
+        cls,
+        session: AsyncSession,
+        uid: str,
+        name: str,
+        level: int,
+        world_level: int,
+        create_time: int
+    ):
+        """保存或更新账号基础信息"""
+        stmt = select(cls).where(cls.uid == uid)
+        result = await session.execute(stmt)
+        obj = result.scalars().first()
+
+        if obj:
+            # 更新
+            obj.name = name
+            obj.level = level
+            obj.world_level = world_level
+            # 更新时间，作为判断活跃用户的依据
+            obj.create_time = create_time
+            session.add(obj)
+        else:
+            # 新增
+            session.add(cls(
+                uid=uid,
+                name=name,
+                level=level,
+                world_level=world_level,
+                create_time=create_time
+            ))
+        await session.commit()
+
+    @classmethod
+    @with_session
+    async def get_account_info(
+        cls,
+        session: AsyncSession,
+        uid: str
+    ) -> Optional["WavesAccountInfo"]:
+        """获取账号基础信息"""
+        stmt = select(cls).where(cls.uid == uid)
+        result = await session.execute(stmt)
+        return result.scalars().first()
+
 
 class WavesCharHoldRate(BaseIDModel, table=True):
     """角色持有率缓存表"""
@@ -334,26 +396,37 @@ class WavesCharHoldRate(BaseIDModel, table=True):
         session: AsyncSession
     ) -> int:
         """
-        [优化版] 更新所有角色持有率（从WavesRoleData统计）
-        使用 SQL 聚合代替 Python 内存处理，极大提高性能。
+        [优化版] 更新所有角色持有率
+        统计标准：Cookie有效 AND 最近30天内更新过AccountInfo(活跃用户)
         """
-        # 1. 获取有效用户过滤条件
-        valid_user_filter = and_(
-            or_(WavesUser.status == null(), WavesUser.status == ""),
-            WavesUser.cookie != null(),
-            WavesUser.cookie != ""
+        current_time = int(time.time())
+        # 30天前的时间戳
+        active_threshold = current_time - (30 * 24 * 60 * 60)
+
+        # 1. 筛选有效且活跃的UID
+        # 条件: (CK状态正常) AND (有CK) AND (账号信息最近30天更新过)
+        # 结果去重 (distinct)
+        valid_active_uids_stmt = (
+            select(WavesUser.uid)
+            .join(WavesAccountInfo, WavesAccountInfo.uid == WavesUser.uid)
+            .where(
+                or_(WavesUser.status == null(), WavesUser.status == ""),
+                WavesUser.cookie != null(),
+                WavesUser.cookie != "",
+                WavesAccountInfo.create_time >= active_threshold
+            )
+            .distinct()
         )
 
-        # 2. 统计总有效用户数
-        total_users_stmt = select(func.count(func.distinct(WavesUser.uid))).where(
-            valid_user_filter
-        )
+        # 2. 统计总活跃且有效玩家数
+        total_users_stmt = select(func.count()).select_from(valid_active_uids_stmt.subquery())
         total_player_count = (await session.execute(total_users_stmt)).scalar() or 0
 
         if total_player_count == 0:
             return 0
 
-        # 3. 数据库聚合查询：一次性查出 角色ID, 角色名, 共鸣链数, 持有数量
+        # 3. 聚合查询角色数据
+        # 仅查询 UID 在 valid_active_uids_stmt 中的角色数据
         stmt = (
             select(
                 WavesRoleData.role_id,
@@ -361,20 +434,18 @@ class WavesCharHoldRate(BaseIDModel, table=True):
                 WavesRoleData.chain_num,
                 func.count(WavesRoleData.uid).label("count")
             )
-            .join(WavesUser, WavesUser.uid == WavesRoleData.uid)
-            .where(valid_user_filter)
+            .where(WavesRoleData.uid.in_(valid_active_uids_stmt))
             .group_by(WavesRoleData.role_id, WavesRoleData.chain_num)
         )
 
         result = await session.execute(stmt)
         rows = result.all()
 
-        # 4. 在内存中组装数据 (数据量极小，仅 角色数 * 7 行)
+        # 4. 在内存中组装数据
         char_stats = {}
 
         for r in rows:
             role_id = r.role_id
-            # 确保 chain 是字符串key
             chain = str(r.chain_num)
 
             if role_id not in char_stats:
@@ -396,7 +467,6 @@ class WavesCharHoldRate(BaseIDModel, table=True):
         existing_records = {r.char_id: r for r in existing_result.scalars().all()}
 
         # 6. 更新 or 插入
-        current_time = int(time.time())
         updated_count = 0
 
         for char_id, stats in char_stats.items():
@@ -406,14 +476,12 @@ class WavesCharHoldRate(BaseIDModel, table=True):
 
             hold_rate = round(player_count / total_player_count * 100, 2)
 
-            # 计算共鸣链分布百分比
             chain_distribution = {}
             for chain, count in stats["chains"].items():
                 if count > 0:
                     chain_distribution[chain] = round(count / player_count * 100, 2)
 
             if char_id in existing_records:
-                # 更新现有记录
                 record = existing_records[char_id]
                 record.char_name = stats["char_name"]
                 record.total_players = total_player_count
@@ -423,7 +491,6 @@ class WavesCharHoldRate(BaseIDModel, table=True):
                 record.update_time = current_time
                 session.add(record)
             else:
-                # 插入新记录
                 new_record = cls(
                     char_id=char_id,
                     char_name=stats["char_name"],
@@ -452,60 +519,6 @@ class WavesCharHoldRate(BaseIDModel, table=True):
         )
         return result.scalar()
 
-class WavesAccountInfo(BaseIDModel, table=True):
-    __table_args__: Dict[str, Any] = {"extend_existing": True}
-
-    uid: str = Field(index=True, unique=True, title="鸣潮UID")
-    name: str = Field(default="", title="账号昵称")
-    level: int = Field(default=0, title="账号等级")
-    world_level: int = Field(default=0, title="世界等级")
-    create_time: int = Field(default=0, title="创建时间")
-
-    @classmethod
-    @with_session
-    async def save_account_info(
-        cls,
-        session: AsyncSession,
-        uid: str,
-        name: str,
-        level: int,
-        world_level: int,
-        create_time: int
-    ):
-        """保存或更新账号基础信息"""
-        stmt = select(cls).where(cls.uid == uid)
-        result = await session.execute(stmt)
-        obj = result.scalars().first()
-
-        if obj:
-            # 更新
-            obj.name = name
-            obj.level = level
-            obj.world_level = world_level
-            obj.create_time = create_time
-            session.add(obj)
-        else:
-            # 新增
-            session.add(cls(
-                uid=uid,
-                name=name,
-                level=level,
-                world_level=world_level,
-                create_time=create_time
-            ))
-        await session.commit()
-
-    @classmethod
-    @with_session
-    async def get_account_info(
-        cls,
-        session: AsyncSession,
-        uid: str
-    ) -> Optional["WavesAccountInfo"]:
-        """获取账号基础信息"""
-        stmt = select(cls).where(cls.uid == uid)
-        result = await session.execute(stmt)
-        return result.scalars().first()
 
 class WavesRoleData(BaseIDModel, table=True):
     __table_args__ = (
@@ -514,7 +527,6 @@ class WavesRoleData(BaseIDModel, table=True):
         Index('ix_role_id_damage', 'role_id', 'damage'),
         {'extend_existing': True},
     )
-
 
     uid: str = Field(index=True, title="鸣潮UID")
     role_id: str = Field(index=True, title="角色ID")
@@ -525,15 +537,18 @@ class WavesRoleData(BaseIDModel, table=True):
     data: Dict = Field(default={}, sa_column=Column(JSON))
 
     @staticmethod
-    def _get_valid_user_filter():
+    def _get_valid_uids_stmt():
         """
-        统一获取有效用户的过滤条件：
-        用户状态正常（空或None） 且 Cookie有效（非空且非None）
+        获取去重后的有效用户UID子查询 (Status空 + Cookie非空)
         """
-        return and_(
-            or_(WavesUser.status == null(), WavesUser.status == ""),
-            WavesUser.cookie != null(),
-            WavesUser.cookie != ""
+        return (
+            select(WavesUser.uid)
+            .where(
+                or_(WavesUser.status == null(), WavesUser.status == ""),
+                WavesUser.cookie != null(),
+                WavesUser.cookie != ""
+            )
+            .distinct()
         )
 
     @classmethod
@@ -673,20 +688,23 @@ class WavesRoleData(BaseIDModel, table=True):
         page: int = 1,
         page_size: int = 20
     ) -> Tuple[List["WavesRoleData"], int]:
-        """获取全局特定角色的排行数据（只包含有效CK的用户）"""
+        """
+        获取全局特定角色的排行数据（只包含有效CK的用户）
+        修正：通过 IN 子查询过滤UID，去重防止多对一
+        """
         
-        valid_user_filter = cls._get_valid_user_filter()
+        valid_uids_subquery = cls._get_valid_uids_stmt()
 
-        # 基础查询：连接 Users 表
-        base_query = select(cls).join(WavesUser, WavesUser.uid == cls.uid).where(
+        # 基础查询
+        base_query = select(cls).where(
             cls.role_id == role_id,
-            valid_user_filter
+            cls.uid.in_(valid_uids_subquery)
         )
 
         # 计算总数
-        count_stmt = select(func.count()).select_from(cls).join(WavesUser, WavesUser.uid == cls.uid).where(
+        count_stmt = select(func.count()).select_from(cls).where(
             cls.role_id == role_id,
-            valid_user_filter
+            cls.uid.in_(valid_uids_subquery)
         )
         total_count = (await session.execute(count_stmt)).scalar() or 0
 
@@ -723,27 +741,28 @@ class WavesRoleData(BaseIDModel, table=True):
         if not role_data:
             return None
 
-        valid_user_filter = cls._get_valid_user_filter()
-        
-        # 2. 确认此UID为有效CK用户
-        user_check_stmt = select(func.count()).select_from(WavesUser).where(
+        # 2. 确认此UID为有效CK用户 (去重)
+        valid_check_stmt = select(func.count()).select_from(WavesUser).where(
             WavesUser.uid == uid,
-            valid_user_filter
+            or_(WavesUser.status == null(), WavesUser.status == ""),
+            WavesUser.cookie != null(),
+            WavesUser.cookie != ""
         )
-        is_valid = (await session.execute(user_check_stmt)).scalar() or 0
+        is_valid = (await session.execute(valid_check_stmt)).scalar() or 0
         
         if not is_valid:
             return None
 
-        # 3. 统计比该值更高的人数（仅在有效CK用户内）
+        # 3. 统计比该值更高的人数 (使用IN子查询，避免Join产生的重复)
         target_value = role_data.score if rank_type == "score" else role_data.damage
-        
         compare_col = cls.damage if rank_type == "damage" else cls.score
 
-        count_stmt = select(func.count()).select_from(cls).join(WavesUser, WavesUser.uid == cls.uid).where(
+        valid_uids_subquery = cls._get_valid_uids_stmt()
+
+        count_stmt = select(func.count()).select_from(cls).where(
             cls.role_id == role_id,
             compare_col > target_value,
-            valid_user_filter
+            cls.uid.in_(valid_uids_subquery)
         )
 
         higher_count = (await session.execute(count_stmt)).scalar() or 0
@@ -758,12 +777,12 @@ class WavesRoleData(BaseIDModel, table=True):
         page_size: int = 20,
         min_score: float = 175.0
     ) -> Tuple[List[Dict], int]:
-        """获取练度总排行"""
-        from collections import defaultdict
-
-        valid_user_filter = cls._get_valid_user_filter()
+        """获取练度总排行 (修正去重逻辑)"""
+        
+        valid_uids_subquery = cls._get_valid_uids_stmt()
 
         # 聚合子查询：计算每个有效用户的总分和角色数
+        # 使用 IN 过滤 valid_uids
         subquery = (
             select(
                 cls.uid.label("uid"),
@@ -780,10 +799,9 @@ class WavesRoleData(BaseIDModel, table=True):
                     )
                 ).label("char_count")
             )
-            .join(WavesUser, WavesUser.uid == cls.uid)
             .where(
-                valid_user_filter,
-                cls.score >= min_score 
+                cls.score >= min_score,
+                cls.uid.in_(valid_uids_subquery)
             )
             .group_by(cls.uid)
             .subquery()
@@ -810,7 +828,7 @@ class WavesRoleData(BaseIDModel, table=True):
         # 收集本页的 UID
         uids = [row.uid for row in page_rows]
 
-        # 批量拉取这些用户的角色详情（避免 N+1）
+        # 批量拉取这些用户的角色详情
         char_stmt = (
             select(cls)
             .where(cls.uid.in_(uids), cls.score >= min_score)
@@ -863,14 +881,16 @@ class WavesRoleData(BaseIDModel, table=True):
     ) -> Optional[int]:
         """获取某个用户在练度总排行中的位置"""
 
-        valid_user_filter = cls._get_valid_user_filter()
+        valid_uids_subquery = cls._get_valid_uids_stmt()
 
         # 1. 检查用户是否有效
         valid_exist = (
             await session.execute(
                 select(func.count()).select_from(WavesUser).where(
                     WavesUser.uid == uid,
-                    valid_user_filter,
+                    or_(WavesUser.status == null(), WavesUser.status == ""),
+                    WavesUser.cookie != null(),
+                    WavesUser.cookie != ""
                 )
             )
         ).scalar() or 0
@@ -888,11 +908,9 @@ class WavesRoleData(BaseIDModel, table=True):
                     )
                 )
             )
-            .join(WavesUser, WavesUser.uid == cls.uid)
             .where(
                 cls.uid == uid,
-                cls.score >= min_score,
-                valid_user_filter,
+                cls.score >= min_score
             )
         )
         user_total_score = (await session.execute(user_stmt)).scalar() or 0
@@ -900,13 +918,12 @@ class WavesRoleData(BaseIDModel, table=True):
         if user_total_score == 0:
             return None
 
-        # 3. 统计总分高于该用户的人数（使用 having 子句）
+        # 3. 统计总分高于该用户的人数 (使用IN子查询)
         higher_subq = (
             select(cls.uid)
-            .join(WavesUser, WavesUser.uid == cls.uid)
             .where(
-                valid_user_filter,
                 cls.score >= min_score,
+                cls.uid.in_(valid_uids_subquery)
             )
             .group_by(cls.uid)
             .having(
@@ -930,8 +947,7 @@ class WavesRoleData(BaseIDModel, table=True):
     async def calc_role_scores_and_damages(
         cls, waves_data: List[Dict]
     ) -> Tuple[Dict[str, float], Dict[str, float]]:
-        """计算所有角色的评分和伤害（纯逻辑方法，保持不变）"""
-        # 注意：这里需要确保相关依赖包可导入
+        """计算所有角色的评分和伤害"""
         from ..api.model import RoleDetailData
         from ..calc import WuWaCalc
         from ..calculate import calc_phantom_score, get_calc_map
@@ -1003,6 +1019,7 @@ class WavesRoleData(BaseIDModel, table=True):
 
         return scores_map, damage_map
 
+
 @site.register_admin
 class WavesBindAdmin(GsAdminModel):
     pk_name = "id"
@@ -1010,8 +1027,6 @@ class WavesBindAdmin(GsAdminModel):
         label="鸣潮绑定管理",
         icon="fa fa-users",
     )  # type: ignore
-
-    # 配置管理模型
     model = WavesBind
 
 
@@ -1022,8 +1037,6 @@ class WavesUserAdmin(GsAdminModel):
         label="鸣潮用户管理",
         icon="fa fa-users",
     )  # type: ignore
-
-    # 配置管理模型
     model = WavesUser
 
 
@@ -1031,8 +1044,6 @@ class WavesUserAdmin(GsAdminModel):
 class WavesPushAdmin(GsAdminModel):
     pk_name = "id"
     page_schema = PageSchema(label="鸣潮推送管理", icon="fa fa-bullhorn")  # type: ignore
-
-    # 配置管理模型
     model = WavesPush
 
 
@@ -1043,8 +1054,6 @@ class WavesCharHoldRateAdmin(GsAdminModel):
         label="鸣潮持有率管理",
         icon="fa fa-users",
     )  # type: ignore
-
-    # 配置管理模型
     model = WavesCharHoldRate
 
 
@@ -1055,8 +1064,6 @@ class WavesAccountInfoAdmin(GsAdminModel):
         label="鸣潮用户账户信息管理",
         icon="fa fa-users",
     )  # type: ignore
-
-    # 配置管理模型
     model = WavesAccountInfo
 
 
@@ -1067,6 +1074,4 @@ class WavesRoleDataAdmin(GsAdminModel):
         label="鸣潮用户角色管理",
         icon="fa fa-users",
     )  # type: ignore
-
-    # 配置管理模型
     model = WavesRoleData
