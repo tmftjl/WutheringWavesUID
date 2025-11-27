@@ -18,7 +18,7 @@ from ..utils.util import get_version
 from ..utils.waves_api import waves_api
 from ..wutheringwaves_config import WutheringWavesConfig
 from .resource.constant import SPECIAL_CHAR_INT_ALL
- .calc import WuWaCalc
+from .calc import WuWaCalc
 
 
 def is_use_global_semaphore() -> bool:
