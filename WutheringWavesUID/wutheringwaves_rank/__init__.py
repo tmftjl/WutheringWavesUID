@@ -55,22 +55,6 @@ async def send_all_rank_card(bot: Bot, ev: Event):
     )
     if not match:
         return
-    ev.regex_dict = match.groupdict()
-    char = match.group("char")
-    pages = match.group("pages")
-
-    if not char:
-        return
-
-    if pages:
-        pages = int(pages)
-    else:
-        pages = 1
-
-    if pages > 5:
-        pages = 5
-    elif pages < 1:
-        pages = 1
 
     rank_type = "伤害"
     if "评分" in char:

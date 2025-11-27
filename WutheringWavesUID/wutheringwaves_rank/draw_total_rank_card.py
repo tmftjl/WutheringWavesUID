@@ -313,3 +313,39 @@ async def draw_total_rank(bot: Bot, ev: Event) -> Union[str, bytes]:
 
     logger.info(f"[draw_total_rank] 耗时: {time.time() - start_time:.2f}秒")
     return await convert_img(card_img)
+async def get_avatar(
+    qid: Optional[str],
+) -> Image.Image:
+    # 检查qid 为纯数字
+    if qid and qid.isdigit():
+        if WutheringWavesConfig.get_config("QQPicCache").data:
+            pic = pic_cache.get(qid)
+            if not pic:
+                pic = await get_qq_avatar(qid, size=100)
+                pic_cache.set(qid, pic)
+        else:
+            pic = await get_qq_avatar(qid, size=100)
+            pic_cache.set(qid, pic)
+        pic_temp = crop_center_img(pic, 120, 120)
+
+        img = Image.new("RGBA", (180, 180))
+        avatar_mask_temp = avatar_mask.copy()
+        mask_pic_temp = avatar_mask_temp.resize((120, 120))
+        img.paste(pic_temp, (0, -5), mask_pic_temp)
+    else:
+        default_avatar_char_id = "1505"
+        pic = await get_square_avatar(default_avatar_char_id)
+
+        pic_temp = Image.new("RGBA", pic.size)
+        pic_temp.paste(pic.resize((160, 160)), (10, 10))
+        pic_temp = pic_temp.resize((160, 160))
+
+        avatar_mask_temp = avatar_mask.copy()
+        mask_pic_temp = Image.new("RGBA", avatar_mask_temp.size)
+        mask_pic_temp.paste(avatar_mask_temp, (-20, -45), avatar_mask_temp)
+        mask_pic_temp = mask_pic_temp.resize((160, 160))
+
+        img = Image.new("RGBA", (180, 180))
+        img.paste(pic_temp, (0, 0), mask_pic_temp)
+
+    return img
