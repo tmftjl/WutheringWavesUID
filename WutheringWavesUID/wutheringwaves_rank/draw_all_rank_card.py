@@ -191,9 +191,8 @@ async def process_rank_data(role_data, rank_id, uid_to_user_id) -> Optional[Rank
 
 
 async def draw_all_rank_card(
-    bot: Bot, ev: Event, char: str, rank_type: str, pages: int
+    bot: Bot, ev: Event, char: str, rank_type: str
 ) -> Union[str, bytes]:
-    # 1. 基础信息
     char_id = char_name_to_char_id(char)
     if not char_id:
         return f"[鸣潮] 角色名【{char}】无法找到, 请检查输入！\n"
@@ -201,21 +200,15 @@ async def draw_all_rank_card(
     char_name = alias_to_char_name(char)
     find_char_id = SPECIAL_CHAR.get(char_id, char_id)
     rank_type_db = "damage" if rank_type == "伤害" else "score"
-
-    start_time = time.time()
     
-    # 2. 获取排行数据 (数据库)
-    rank_data_list, total_count = await WavesRoleData.get_global_role_rank(
-        role_id=str(find_char_id),
-        rank_type=rank_type_db,
-        page=pages,
-        page_size=rank_length
-    )
+    # 默认只看前20
+    limit_num = 20
+    start_time = time.time()
 
-    if not rank_data_list:
-        return f"[鸣潮] 暂无【{char_name}】的排行数据\n请先使用【{PREFIX}刷新面板】！"
+    # 获取 UID
+    self_uid = await WavesBind.get_uid_by_game(ev.user_id, ev.bot_id)
+    target_uid = self_uid if self_uid else None
 
-    # 3. UID 转 QQ号 映射
     uid_to_user_id = {}
     all_binds = await WavesBind.get_all_bind()
     for bind in all_binds:
@@ -224,67 +217,53 @@ async def draw_all_rank_card(
                 if uid:
                     uid_to_user_id[uid] = bind.user_id
 
-    # 4. 获取自己的 UID 和 排名
-    self_uid = await WavesBind.get_uid_by_game(ev.user_id, ev.bot_id)
-    self_rank_pos = None
+    # 调用新接口获取排行数据
+    rank_result = await WavesRoleData.get_role_rank_data(
+        role_id=str(find_char_id),
+        rank_type=rank_type_db,
+        limit=limit_num,
+        target_uid=target_uid
+    )
     
-    if self_uid:
-        self_rank_pos = await WavesRoleData.get_role_rank_position(
-            uid=self_uid,
-            role_id=str(find_char_id),
-            rank_type=rank_type_db
-        )
+    rank_rows = rank_result["list"]
+    self_info_data = rank_result["self_info"]
 
-    # 5. 构建 RankInfo 列表
+    if not rank_rows and not self_info_data:
+        return f"[鸣潮] 暂无【{char_name}】的排行数据\n请先使用【{PREFIX}刷新面板】！"
+
     rankInfoList: List[RankInfo] = []
-    
-    # 统计数据
-    total_score = 0
-    total_damage = 0
-
-    for idx, role_data in enumerate(rank_data_list):
-        current_rank_id = (pages - 1) * rank_length + idx + 1
+    for idx, role_data in enumerate(rank_rows):
+        current_rank_id = idx + 1
         info = await process_rank_data(role_data, current_rank_id, uid_to_user_id)
         if info:
             rankInfoList.append(info)
 
-    # 6. 处理自身排名 (追加逻辑)
-    # 检查自己是否在当前页
-    is_self_in_list = False
-    if self_uid:
-        for info in rankInfoList:
-            if info.uid == self_uid:
-                is_self_in_list = True
-                break
-    
-    # 如果自己不在当前列表，且有有效排名，则追加到最后
+    # 处理自己的排名
     self_appended = False
-    if self_uid and self_rank_pos and not is_self_in_list:
-        try:
-            from ..utils.database.base import get_session
-            from sqlalchemy import select
-            
-            async with get_session() as session:
-                stmt = select(WavesRoleData).where(
-                    WavesRoleData.uid == self_uid,
-                    WavesRoleData.role_id == str(find_char_id)
-                )
-                res = await session.execute(stmt)
-                self_db_data = res.scalar_one_or_none()
-            
-            if self_db_data:
-                # 注意：这里的 rank_id 使用真实的 self_rank_pos
-                self_info = await process_rank_data(self_db_data, self_rank_pos, uid_to_user_id)
-                if self_info:
-                    rankInfoList.append(self_info)
-                    self_appended = True
-        except Exception as e:
-            logger.exception(f"获取自身数据失败: {e}")
+    if self_info_data:
+        # 检查是否已经在列表中
+        is_in_list = False
+        for info in rankInfoList:
+            if str(info.uid) == str(self_info_data["data"].uid):
+                is_in_list = True
+                break
+        
+        # 如果不在列表中（说明在20名以外），则追加
+        if not is_in_list:
+            self_rank_obj = await process_rank_data(
+                self_info_data["data"], 
+                self_info_data["rank"], 
+                uid_to_user_id
+            )
+            if self_rank_obj:
+                rankInfoList.append(self_rank_obj)
+                self_appended = True
 
-    # 7. 计算平均值 (排除追加的自己，如果追加了的话)
-    # 遍历计算前 rank_length 个数据的总分
+    # 计算平均值
     calc_list = rankInfoList[:-1] if self_appended else rankInfoList
     
+    total_score = 0
+    total_damage = 0
     for info in calc_list:
         total_score += info.score
         total_damage += info.expected_damage_int
@@ -293,7 +272,7 @@ async def draw_all_rank_card(
     avg_score = f"{total_score / calc_num:.1f}" if calc_num != 0 else "0"
     avg_damage = f"{total_damage / calc_num:,.0f}" if calc_num != 0 else "0"
 
-    # 8. 绘制图片 (逻辑完全复制 draw_rank_img)
+    # 绘制图片
     totalNum = len(rankInfoList)
     title_h = 500
     bar_star_h = 110
@@ -303,6 +282,7 @@ async def draw_all_rank_card(
 
     bar = Image.open(TEXT_PATH / "bar.png")
 
+    # 获取头像
     tasks = [
         get_avatar(ev, rank.qid, rank.roleDetail.role.roleId) for rank in rankInfoList
     ]
@@ -315,7 +295,7 @@ async def draw_all_rank_card(
         bar_bg = bar.copy()
         bar_star_draw = ImageDraw.Draw(bar_bg)
         
-        # 头像 (坐标复制 draw_rank_img)
+        # 头像
         bar_bg.paste(role_avatar, (100, 0), role_avatar)
 
         # 属性
@@ -371,7 +351,6 @@ async def draw_all_rank_card(
 
         # 武器
         weapon_bg_temp = Image.new("RGBA", (600, 300))
-
         weaponData: WeaponData = rank_role_detail.weaponData
         weapon_icon = await get_square_weapon(weaponData.weapon.weaponId)
         weapon_icon = crop_center_img(weapon_icon, 110, 110)
@@ -421,7 +400,6 @@ async def draw_all_rank_card(
 
         # 排名角标
         rank_color = (54, 54, 54)
-        # 注意：这里 index 是列表索引，0, 1, 2
         if rank.rank_id == 1:
             rank_color = (255, 0, 0)
         elif rank.rank_id == 2:
@@ -478,16 +456,12 @@ async def draw_all_rank_card(
     if char_id in SPECIAL_CHAR_NAME:
         char_name = SPECIAL_CHAR_NAME[char_id]
 
-    title_name = f"{char_name}{rank_type}总排行"
+    title_name = f"{char_name}{rank_type}bot排行"
     title_draw.text((140, 265), f"{title_name}", "black", waves_font_30, "lm")
-    
-    # 页码信息
-    page_info = f"第{pages}页 / 共{total_count}人"
-    title_draw.text((600, 265), f"{page_info}", "black", waves_font_20, "lm")
 
     # 备注
     rank_row_title = "入榜条件"
-    rank_row = f"使用命令【{PREFIX}刷新面板】刷新过面板且拥有有效CK"
+    rank_row = f"使用命令【{PREFIX}刷新面板】刷新过面板且拥有有效token"
     title_draw.text((20, 420), f"{rank_row_title}", SPECIAL_GOLD, waves_font_16, "lm")
     title_draw.text((90, 420), f"{rank_row}", GREY, waves_font_16, "lm")
 

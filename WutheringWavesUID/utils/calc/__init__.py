@@ -441,3 +441,78 @@ class WuWaCalc(object):
         attr.set_ph_result(card_sort_map["ph_result"])
         attr.set_role(self.role_detail)
         return attr
+
+
+    @staticmethod
+    async def calc_role_scores_and_damages(waves_data: List[Dict]) -> tuple[Dict[str, float], Dict[str, float]]:
+        """
+        计算所有角色的评分和伤害
+        """
+        from ...utils.api.model import RoleDetailData
+        from ..calculate import calc_phantom_score, get_calc_map
+        from ..damage.abstract import DamageRankRegister
+
+        scores_map: Dict[str, float] = {}
+        damage_map: Dict[str, float] = {}
+
+        for role_data in waves_data:
+            role_id = str(role_data.get("role", {}).get("roleId", ""))
+            try:
+                role_detail = RoleDetailData(**role_data)
+                role_id = str(role_detail.role.roleId)
+
+                # 若无回声数据，直接置零
+                if (
+                    not role_detail.phantomData
+                    or not role_detail.phantomData.equipPhantomList
+                ):
+                    scores_map[role_id] = 0.0
+                    damage_map[role_id] = 0.0
+                    continue
+
+                # 评分/属性计算上下文
+                calc = WuWaCalc(role_detail)
+                calc.phantom_pre = calc.prepare_phantom()
+                calc.phantom_card = calc.enhance_summation_phantom_value(
+                    calc.phantom_pre
+                )
+                calc.calc_temp = get_calc_map(
+                    calc.phantom_card,
+                    role_detail.role.roleName,
+                    role_detail.role.roleId,
+                )
+
+                # 回声评分累加
+                phantom_score = 0.0
+                for _phantom in role_detail.phantomData.equipPhantomList:
+                    if _phantom and _phantom.phantomProp:
+                        props = _phantom.get_props()
+                        _score, _bg = calc_phantom_score(
+                            role_detail.role.roleId,
+                            props,
+                            _phantom.cost,
+                            calc.calc_temp,
+                        )
+                        phantom_score += _score
+                scores_map[role_id] = round(phantom_score, 2)
+
+                # 期望伤害
+                rankDetail = DamageRankRegister.find_class(role_id)
+                if rankDetail:
+                    calc.role_card = calc.enhance_summation_card_value(calc.phantom_card)
+                    calc.damageAttribute = calc.card_sort_map_to_attribute(calc.role_card)
+                    _, expected_damage = rankDetail["func"](
+                        calc.damageAttribute, role_detail
+                    )
+                    damage_map[role_id] = float(str(expected_damage).replace(",", ""))
+                else:
+                    damage_map[role_id] = 0.0
+
+            except Exception as e:
+                logger.exception(
+                    f"角色 {role_id} 评分和伤害计算失败:", e
+                )
+                scores_map[role_id] = 0.0
+                damage_map[role_id] = 0.0
+
+        return scores_map, damage_map

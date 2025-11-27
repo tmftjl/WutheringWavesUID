@@ -18,7 +18,7 @@ from ..utils.util import get_version
 from ..utils.waves_api import waves_api
 from ..wutheringwaves_config import WutheringWavesConfig
 from .resource.constant import SPECIAL_CHAR_INT_ALL
-from .database.models import WavesRoleData
+ .calc import WuWaCalc
 
 
 def is_use_global_semaphore() -> bool:
@@ -117,56 +117,55 @@ async def save_card_info(
     token: str = "",
     role_info: Optional[RoleList] = None,
 ):
-    if len(waves_data) == 0:
+    """
+    处理角色数据更新、生成卡片并同步数据库
+    """
+    if not waves_data:
         return
-
-    # 获取旧数据（从数据库）
     old_data_map = await WavesRoleData.get_role_data_map_by_uid(uid)
+    new_role_ids = set(str(item["role"]["roleId"]) for item in waves_data)
+    special_char_set = set(str(x) for x in SPECIAL_CHAR_INT_ALL)
+    
+    if not new_role_ids.isdisjoint(special_char_set):
+        keys_to_remove = [k for k in old_data_map.keys() if k in special_char_set]
+        for k in keys_to_remove:
+            del old_data_map[k]
 
-    # 标记更新和未更新的角色
     refresh_update = {}
     refresh_unchanged = {}
 
     for item in waves_data:
-        role_id = item["role"]["roleId"]
-
-        if role_id in SPECIAL_CHAR_INT_ALL:
-            # 漂泊者预处理 - 删除其他漂泊者形态的旧数据
-            for piaobo_id in SPECIAL_CHAR_INT_ALL:
-                if piaobo_id != role_id and str(piaobo_id) in old_data_map:
-                    del old_data_map[str(piaobo_id)]
-
-        old = old_data_map.get(str(role_id))
+        role_id = str(item["role"]["roleId"])
+        old = old_data_map.get(role_id)
         if old != item:
             refresh_update[role_id] = item
         else:
             refresh_unchanged[role_id] = item
+        old_data_map[role_id] = item
 
-        old_data_map[str(role_id)] = item
+    # 生成最终的全量列表 (这是数据库最终应有的状态)
+    final_save_data = list(old_data_map.values())
 
-    save_data = list(old_data_map.values())
+    # 生成/发送图片
+    await send_card(uid, user_id, final_save_data, is_self_ck, token, role_info, waves_data)
 
-    await send_card(uid, user_id, save_data, is_self_ck, token, role_info, waves_data)
+    scores_map, damage_map = await WuWaCalc.calc_role_scores_and_damages(final_save_data)
 
-    # 计算所有角色的评分和伤害 - 调用数据库模型的方法
-    scores_map, damage_map = await WavesRoleData.calc_role_scores_and_damages(save_data)
-
-    # 保存到数据库
     try:
         await WavesRoleData.save_role_data(
             uid=uid,
-            role_data_list=save_data,
+            role_data_list=final_save_data,
             scores_map=scores_map,
             damage_map=damage_map
         )
-        logger.info(f"角色数据已保存到数据库: uid={uid}, 角色数量={len(save_data)}")
+        logger.info(f"角色数据同步完成: uid={uid}, 角色总数={len(final_save_data)}")
     except Exception as e:
-        logger.exception(f"保存角色数据到数据库失败 uid={uid}:", e)
+        logger.exception(f"保存角色数据到数据库失败 uid={uid}: {e}")
 
-    if waves_map:
+    # 回填状态供上层调用者使用
+    if waves_map is not None:
         waves_map["refresh_update"] = refresh_update
         waves_map["refresh_unchanged"] = refresh_unchanged
-
 
 async def refresh_char(
     ev: Event,
@@ -296,3 +295,4 @@ async def refresh_char(
             return error_reply(code=-110, msg="库街区暂未查询到角色数据")
 
     return waves_datas
+
