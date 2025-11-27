@@ -50,7 +50,7 @@ async def send_rank_card(bot: Bot, ev: Event):
 async def send_all_rank_card(bot: Bot, ev: Event):
     # 正则表达式
     match = re.search(
-        r"(?P<char>[\u4e00-\u9fa5]+)(?:总排行|总排名)(?P<pages>(\d+))?",
+        r"(?P<char>[\u4e00-\u9fa5]+)(?:总排行|总排名)",
         ev.raw_text,
     )
     if not match:
@@ -78,7 +78,7 @@ async def send_all_rank_card(bot: Bot, ev: Event):
     char = char.replace("伤害", "").replace("评分", "")
 
     # 使用本地数据库版本
-    im = await draw_all_rank_card(bot, ev, char, rank_type, pages)
+    im = await draw_all_rank_card(bot, ev, char, rank_type)
 
     if isinstance(im, str):
         at_sender = True if ev.group_id else False
@@ -89,17 +89,9 @@ async def send_all_rank_card(bot: Bot, ev: Event):
 
 @sv_waves_rank_total_list.on_command(("练度总排行", "练度总排名"), block=True)
 async def send_total_rank_card(bot: Bot, ev: Event):
-    # 支持分页
-    match = re.search(r"(\d+)", ev.raw_text)
-    if match:
-        pages = int(match.group(1))
-    else:
-        pages = 1
-    pages = max(pages, 1)  # 最小为1
-    pages = min(pages, 5)  # 最大为5
 
     # 使用本地数据库版本
-    im = await draw_total_rank(bot, ev, pages)
+    im = await draw_total_rank(bot, ev)
 
     if isinstance(im, str):
         at_sender = True if ev.group_id else False
