@@ -55,7 +55,9 @@ async def send_all_rank_card(bot: Bot, ev: Event):
     )
     if not match:
         return
-
+    char = match.group("char")
+    if not char:
+        return
     rank_type = "伤害"
     if "评分" in char:
         rank_type = "评分"
