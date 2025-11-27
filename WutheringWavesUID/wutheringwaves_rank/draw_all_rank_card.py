@@ -20,7 +20,7 @@ from ..utils.calculate import (
     get_total_score_bg,
 )
 from ..utils.damage.abstract import DamageRankRegister
-from ..utils.database.models import WavesBind, WavesRoleData
+from ..utils.database.models import WavesBind, WavesRoleData, WavesUser
 from ..utils.fonts.waves_fonts import (
     waves_font_14,
     waves_font_16,
@@ -207,7 +207,13 @@ async def draw_all_rank_card(
 
     # 获取 UID
     self_uid = await WavesBind.get_uid_by_game(ev.user_id, ev.bot_id)
-    target_uid = self_uid if self_uid else None
+    target_uid = None
+
+    # 只有 cookie 有效时才获取自己的排行
+    if self_uid:
+        user_data = await WavesUser.select_waves_user(self_uid, ev.user_id, ev.bot_id)
+        if user_data and user_data.cookie and (not user_data.status or user_data.status == ""):
+            target_uid = self_uid
 
     uid_to_user_id = {}
     all_binds = await WavesBind.get_all_bind()

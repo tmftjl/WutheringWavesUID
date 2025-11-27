@@ -645,18 +645,17 @@ class WavesRoleData(BaseIDModel, table=True):
         """
         获取群内该角色所有数据，直接在数据库层完成排序
         """
-        async with get_session() as session:
-            stmt = select(cls).where(
-                cls.uid.in_(uid_list),
-                cls.role_id == role_id
-            )
-            if rank_type == "damage":
-                stmt = stmt.order_by(cls.damage.desc(), cls.score.desc())
-            else:
-                stmt = stmt.order_by(cls.score.desc(), cls.damage.desc())
+        stmt = select(cls).where(
+            cls.uid.in_(uid_list),
+            cls.role_id == role_id
+        )
+        if rank_type == "damage":
+            stmt = stmt.order_by(cls.damage.desc(), cls.score.desc())
+        else:
+            stmt = stmt.order_by(cls.score.desc(), cls.damage.desc())
 
-            result = await session.execute(stmt)
-            return list(result.scalars().all())
+        result = await session.execute(stmt)
+        return list(result.scalars().all())
 
     @classmethod
     @with_session
