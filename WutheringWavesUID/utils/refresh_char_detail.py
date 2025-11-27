@@ -19,6 +19,7 @@ from ..utils.waves_api import waves_api
 from ..wutheringwaves_config import WutheringWavesConfig
 from .resource.constant import SPECIAL_CHAR_INT_ALL
 from .calc import WuWaCalc
+from .database.models import WavesRoleData
 
 
 def is_use_global_semaphore() -> bool:
