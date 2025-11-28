@@ -744,6 +744,23 @@ class WavesRoleData(BaseIDModel, table=True):
         rank_type: str = "score"
     ) -> Optional[int]:
         """获取某个角色在总排行榜中的位置（只在有效CK用户中排名）"""
+        stmt = select(cls).where(cls.uid == uid, cls.role_id == role_id)
+        result = await session.execute(stmt)
+        role_data = result.scalars().first()
+
+        if not role_data:
+            return None
+
+        valid_check_stmt = select(func.count()).select_from(WavesUser).where(
+            WavesUser.uid == uid,
+            or_(WavesUser.status == null(), WavesUser.status == ""),
+            WavesUser.cookie != null(),
+            WavesUser.cookie != ""
+        )
+        is_valid = (await session.execute(valid_check_stmt)).scalar() or 0
+        
+        if not is_valid:
+            return None
         target_value = role_data.score if rank_type == "score" else role_data.damage
         compare_col = cls.damage if rank_type == "damage" else cls.score
 
