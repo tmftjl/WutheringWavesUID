@@ -54,7 +54,7 @@ from ..utils.resource.constant import SPECIAL_CHAR, SPECIAL_CHAR_NAME
 from ..utils.util import hide_uid
 from ..wutheringwaves_config import PREFIX, WutheringWavesConfig
 
-rank_length = 20  # 排行长度
+rank_length = 20  # 鎺掕闀垮害
 TEXT_PATH = Path(__file__).parent / "texture2d"
 TITLE_I = Image.open(TEXT_PATH / "title.png")
 TITLE_II = Image.open(TEXT_PATH / "title2.png")
@@ -69,36 +69,38 @@ pic_cache = TimedCache(86400, 200)
 
 
 class RankInfo(BaseModel):
-    roleDetail: RoleDetailData  # 角色明细
+    roleDetail: RoleDetailData  # 瑙掕壊鏄庣粏
     qid: str  # qq id
     uid: str  # uid
-    level: int  # 角色等级
-    chain: int  # 命座
-    chainName: str  # 命座
-    score: float  # 角色评分
-    score_bg: str  # 评分背景
-    expected_damage: str  # 期望伤害
-    expected_damage_int: int  # 期望伤害
-    sonata_name: str  # 合鸣效果
+    level: int  # 瑙掕壊绛夌骇
+    chain: int  # 鍛藉骇
+    chainName: str  # 鍛藉骇
+    score: float  # 瑙掕壊璇勫垎
+    score_bg: str  # 璇勫垎鑳屾櫙
+    expected_damage: str  # 鏈熸湜浼ゅ
+    expected_damage_int: int  # 鏈熸湜浼ゅ
+    sonata_name: str  # 鍚堥福鏁堟灉
 
 
 def db_row_to_rank_info(row: WavesRoleData, qid: str) -> RankInfo:
-    """将数据库行数据转换为 RankInfo 对象"""
+    """灏嗘暟鎹簱琛屾暟鎹浆鎹负 RankInfo 瀵硅薄"""
     role_detail = RoleDetailData.parse_obj(row.data)
     sonata_name = ""
-    # 修复：增加对 phantomData 的空值判断，防止 AttributeError
+    # 淇锛氬鍔犲 phantomData 鐨勭┖鍊煎垽鏂紝闃叉 AttributeError
+    calc_temp = get_calc_map({}, role_detail.role.roleName, role_detail.role.roleId)
     if role_detail.phantomData and role_detail.phantomData.equipPhantomList:
         calc = WuWaCalc(role_detail)
         calc.phantom_pre = calc.prepare_phantom()
         phantom_card = calc.enhance_summation_phantom_value(calc.phantom_pre)
+        calc_temp = get_calc_map(phantom_card, role_detail.role.roleName, role_detail.role.roleId)
         ph_detail = phantom_card.get("ph_detail", [])
         for ph in ph_detail:
             if ph.get("ph_num") == 5 or ph.get("isFull"):
                 sonata_name = ph.get("ph_name", "")
                 break
 
-    # 获取评分背景 (S/A/B/C)
-    score_bg = get_total_score_bg(role_detail.role.roleName, row.score, {})
+    # 鑾峰彇璇勫垎鑳屾櫙 (S/A/B/C)
+    score_bg = get_total_score_bg(role_detail.role.roleName, row.score, calc_temp)
 
     return RankInfo(
         roleDetail=role_detail,
@@ -119,19 +121,18 @@ async def get_waves_token_condition(ev):
     wavesTokenUsersMap = {}
     flag = False
 
-    # 群组 不限制token
+    # 缇ょ粍 涓嶉檺鍒秚oken
     WavesRankUseTokenGroup = WutheringWavesConfig.get_config(
         "WavesRankNoLimitGroup"
     ).data
     if WavesRankUseTokenGroup and ev.group_id in WavesRankUseTokenGroup:
         return flag, wavesTokenUsersMap
 
-    # 群组 自定义的
+    # 缇ょ粍 鑷畾涔夌殑
     WavesRankUseTokenGroup = WutheringWavesConfig.get_config(
         "WavesRankUseTokenGroup"
     ).data
-    # 全局 主人定义的
-    RankUseToken = WutheringWavesConfig.get_config("RankUseToken").data
+    # 鍏ㄥ眬 涓讳汉瀹氫箟鐨?    RankUseToken = WutheringWavesConfig.get_config("RankUseToken").data
     if (
         WavesRankUseTokenGroup and ev.group_id in WavesRankUseTokenGroup
     ) or RankUseToken:
@@ -146,18 +147,17 @@ async def draw_rank_img(
     bot: Bot, ev: Event, char: str, rank_type: str
 ) -> Union[str, bytes]:
     char_id = char_name_to_char_id(char)
-    if not char_id:
-        return (
-            f"[鸣潮] 角色名【{char}】无法找到, 可能暂未适配, 请先检查输入是否正确！\n"
+        return "[鸣潮] 角色名【%s】无法找到, 可能暂未适配, 请先检查输入是否正确！\n" % char
+
+
         )
     char_name = alias_to_char_name(char)
 
     rankDetail = DamageRankRegister.find_class(char_id)
-    if not rankDetail and rank_type == "伤害":
-        # 伤害标题（若角色未支持伤害计算则显示 "无"）
-        return f"[鸣潮] 角色【{char_name}排行】暂未适配伤害计算，请等待作者更新！\n"
+    if not rankDetail and rank_type == "浼ゅ":
+        # 浼ゅ鏍囬锛堣嫢瑙掕壊鏈敮鎸佷激瀹宠绠楀垯鏄剧ず "鏃?锛?        return f"[楦ｆ疆] 瑙掕壊銆恵char_name}鎺掕銆戞殏鏈€傞厤浼ゅ璁＄畻锛岃绛夊緟浣滆€呮洿鏂帮紒\n"
     
-    damage_title = (rankDetail and rankDetail.get("title")) or "无"
+    damage_title = (rankDetail and rankDetail.get("title")) or "鏃?
     if char_id in SPECIAL_CHAR:
         find_char_id = SPECIAL_CHAR[char_id]
     else:
@@ -166,19 +166,19 @@ async def draw_rank_img(
     start_time = time.time()
     logger.info(f"[draw_rank_img] start processing for group: {ev.group_id}")
     
-    # 获取群里的所有拥有该角色人的数据
+    # 鑾峰彇缇ら噷鐨勬墍鏈夋嫢鏈夎瑙掕壊浜虹殑鏁版嵁
     users = await WavesBind.get_group_all_uid(ev.group_id)
     
     if not users:
         msg = []
-        msg.append(f"[鸣潮] 群【{ev.group_id}】暂无【{char}】面板")
-        msg.append(f"请使用【{PREFIX}刷新面板】后再使用此功能！")
+        msg.append(f"[楦ｆ疆] 缇ゃ€恵ev.group_id}銆戞殏鏃犮€恵char}銆戦潰鏉?)
+        msg.append(f"璇蜂娇鐢ㄣ€恵PREFIX}鍒锋柊闈㈡澘銆戝悗鍐嶄娇鐢ㄦ鍔熻兘锛?)
         msg.append("")
         return "\n".join(msg)
 
     tokenLimitFlag, wavesTokenUsersMap = await get_waves_token_condition(ev)
     
-    # 构建 uid -> qid(平台用户id) 映射，并在需要时按有效 ck 过滤
+    # 鏋勫缓 uid -> qid(骞冲彴鐢ㄦ埛id) 鏄犲皠锛屽苟鍦ㄩ渶瑕佹椂鎸夋湁鏁?ck 杩囨护
     uid_map = {}
     for bind in users:
         if not bind.uid:
@@ -188,7 +188,7 @@ async def draw_rank_img(
             if not _uid:
                 continue
             if tokenLimitFlag:
-                # 仅保留拥有有效 cookie 的 (user_id, uid)
+                # 浠呬繚鐣欐嫢鏈夋湁鏁?cookie 鐨?(user_id, uid)
                 if (bind.user_id, _uid) not in wavesTokenUsersMap or not wavesTokenUsersMap.get((bind.user_id, _uid)):
                     continue
             uid_map[_uid] = bind.user_id
@@ -197,18 +197,17 @@ async def draw_rank_img(
 
     if not uid_list:
         msg = []
-        msg.append(f"[鸣潮] 群【{ev.group_id}】暂无【{char}】有效数据")
-        msg.append(f"请使用【{PREFIX}刷新面板】后再使用此功能！")
+        msg.append(f"[楦ｆ疆] 缇ゃ€恵ev.group_id}銆戞殏鏃犮€恵char}銆戞湁鏁堟暟鎹?)
+        msg.append(f"璇蜂娇鐢ㄣ€恵PREFIX}鍒锋柊闈㈡澘銆戝悗鍐嶄娇鐢ㄦ鍔熻兘锛?)
         if tokenLimitFlag:
-            msg.append(f"当前排行开启了登录验证，请使用命令【{PREFIX}登录】登录后使用此功能！")
+            msg.append(f"褰撳墠鎺掕寮€鍚簡鐧诲綍楠岃瘉锛岃浣跨敤鍛戒护銆恵PREFIX}鐧诲綍銆戠櫥褰曞悗浣跨敤姝ゅ姛鑳斤紒")
         msg.append("")
         return "\n".join(msg)
 
-    # 获取自己的 UID
+    # 鑾峰彇鑷繁鐨?UID
     self_uid = await WavesBind.get_uid_by_game(ev.user_id, ev.bot_id)
 
-    # 数据库直接获取排序好的数据
-    db_rank_type = "damage" if rank_type == "伤害" else "score"
+    # 鏁版嵁搴撶洿鎺ヨ幏鍙栨帓搴忓ソ鐨勬暟鎹?    db_rank_type = "damage" if rank_type == "浼ゅ" else "score"
     all_rows = await WavesRoleData.get_group_all_data(
         uid_list=uid_list,
         role_id=str(find_char_id),
@@ -217,15 +216,14 @@ async def draw_rank_img(
 
     if not all_rows:
         msg = []
-        msg.append(f"[鸣潮] 群{ev.group_id}暂无 {char} 数据")
-        msg.append(f"1.请使用『{PREFIX}刷新面板』后再使用本功能")
+        msg.append(f"[楦ｆ疆] 缇ev.group_id}鏆傛棤 {char} 鏁版嵁")
+        msg.append(f"1.璇蜂娇鐢ㄣ€巤PREFIX}鍒锋柊闈㈡澘銆忓悗鍐嶄娇鐢ㄦ湰鍔熻兘")
         if tokenLimitFlag:
-            msg.append(f"2.使用指令『{PREFIX}登录』登录后可参与")
+            msg.append(f"2.浣跨敤鎸囦护銆巤PREFIX}鐧诲綍銆忕櫥褰曞悗鍙弬涓?)
         return "\n".join(msg)
 
 
-    # 转换为 RankInfo 并处理排名
-    rankInfoList = []
+    # 杞崲涓?RankInfo 骞跺鐞嗘帓鍚?    rankInfoList = []
     self_real_index = -1
     for index, row in enumerate(all_rows):
         qid = uid_map.get(row.uid)
@@ -246,8 +244,7 @@ async def draw_rank_img(
 
     totalNum = len(display_list)
     
-    # 计算平均分时的数量（不包含追加在最后的自己，以免拉低平均分）
-    calc_avg_num = totalNum
+    # 璁＄畻骞冲潎鍒嗘椂鐨勬暟閲忥紙涓嶅寘鍚拷鍔犲湪鏈€鍚庣殑鑷繁锛屼互鍏嶆媺浣庡钩鍧囧垎锛?    calc_avg_num = totalNum
     if rankId and rankId > rank_length:
         calc_avg_num -= 1
 
@@ -261,7 +258,7 @@ async def draw_rank_img(
     total_score = 0
     total_damage = 0
 
-    # 批量获取头像
+    # 鎵归噺鑾峰彇澶村儚
     tasks = [
         get_avatar(ev, rank.qid, rank.roleDetail.role.roleId) for rank in display_list
     ]
@@ -276,14 +273,13 @@ async def draw_rank_img(
         bar_star_draw = ImageDraw.Draw(bar_bg)
         bar_bg.paste(role_avatar, (100, 0), role_avatar)
 
-        # 属性图标
-        role_attribute = await get_attribute(
-            rank_role_detail.role.attributeName or "导电", is_simple=True
+        # 灞炴€у浘鏍?        role_attribute = await get_attribute(
+            rank_role_detail.role.attributeName or "瀵肩數", is_simple=True
         )
         role_attribute = role_attribute.resize((40, 40)).convert("RGBA")
         bar_bg.alpha_composite(role_attribute, (300, 20))
 
-        # 命座
+        # 鍛藉骇
         info_block = Image.new("RGBA", (46, 20), color=(255, 255, 255, 0))
         info_block_draw = ImageDraw.Draw(info_block)
         fill = CHAIN_COLOR[rank.chain] + (int(0.9 * 255),)
@@ -291,7 +287,7 @@ async def draw_rank_img(
         info_block_draw.text((5, 10), f"{rank.chainName}", "white", waves_font_18, "lm")
         bar_bg.alpha_composite(info_block, (190, 30))
 
-        # 等级
+        # 绛夌骇
         info_block = Image.new("RGBA", (60, 20), color=(255, 255, 255, 0))
         info_block_draw = ImageDraw.Draw(info_block)
         info_block_draw.rounded_rectangle(
@@ -300,7 +296,7 @@ async def draw_rank_img(
         info_block_draw.text((5, 10), f"Lv.{rank.level}", "white", waves_font_18, "lm")
         bar_bg.alpha_composite(info_block, (240, 30))
 
-        # 评分
+        # 璇勫垎
         if rank.score > 0.0:
             score_bg = Image.open(TEXT_PATH / f"score_{rank.score_bg}.png")
             bar_bg.alpha_composite(score_bg, (320, 2))
@@ -311,23 +307,23 @@ async def draw_rank_img(
                 waves_font_30,
                 "mm",
             )
-            bar_star_draw.text((466, 75), "声骸分数", SPECIAL_GOLD, waves_font_16, "mm")
+            bar_star_draw.text((466, 75), "澹伴鍒嗘暟", SPECIAL_GOLD, waves_font_16, "mm")
 
-        # 合鸣效果
+        # 鍚堥福鏁堟灉
         if rank.sonata_name:
             effect_image = await get_attribute_effect(rank.sonata_name)
             effect_image = effect_image.resize((50, 50))
             bar_bg.alpha_composite(effect_image, (533, 15))
             sonata_name = rank.sonata_name
         else:
-            sonata_name = "合鸣效果"
+            sonata_name = "鍚堥福鏁堟灉"
 
         sonata_font = waves_font_16
         if len(sonata_name) > 4:
             sonata_font = waves_font_14
         bar_star_draw.text((558, 75), f"{sonata_name}", "white", sonata_font, "mm")
 
-        # 武器
+        # 姝﹀櫒
         weapon_bg_temp = Image.new("RGBA", (600, 300))
         weaponData: WeaponData = rank_role_detail.weaponData
         if weaponData and weaponData.weapon:
@@ -357,15 +353,15 @@ async def draw_rank_img(
                  [_x - 15, _y - 15, _x + 50, _y + 15], radius=7, fill=wrc_fill
              )
              weapon_bg_temp_draw.text(
-                 (_x, _y), f"精{weaponData.resonLevel}", "white", waves_font_24, "lm"
+                 (_x, _y), f"绮緖weaponData.resonLevel}", "white", waves_font_24, "lm"
              )
      
              weapon_bg_temp.alpha_composite(weapon_icon_bg, dest=(45, 0))
              bar_bg.alpha_composite(weapon_bg_temp.resize((260, 130)), dest=(580, 25))
 
-        # 伤害
-        if damage_title == "无":
-            bar_star_draw.text((870, 55), "等待更新(:", GREY, waves_font_34, "mm")
+        # 浼ゅ
+        if damage_title == "鏃?:
+            bar_star_draw.text((870, 55), "绛夊緟鏇存柊(:", GREY, waves_font_34, "mm")
         else:
             bar_star_draw.text(
                 (870, 45), f"{rank.expected_damage}", SPECIAL_GOLD, waves_font_34, "mm"
@@ -374,7 +370,7 @@ async def draw_rank_img(
                 (870, 75), f"{damage_title}", "white", waves_font_16, "mm"
             )
 
-        # 排名
+        # 鎺掑悕
         rank_color = (54, 54, 54)
         if index == 0:
             rank_color = (255, 0, 0)
@@ -392,9 +388,8 @@ async def draw_rank_img(
             rank_draw.text(draw, f"{rank_id}", "white", waves_font_34, "mm")
             bar_bg.alpha_composite(info_rank, dest)
 
-        # 计算显示的排名
-        current_display_rank = index + 1
-        # 如果是列表最后一个，且真实排名 > 20，则显示真实排名
+        # 璁＄畻鏄剧ず鐨勬帓鍚?        current_display_rank = index + 1
+        # 濡傛灉鏄垪琛ㄦ渶鍚庝竴涓紝涓旂湡瀹炴帓鍚?> 20锛屽垯鏄剧ず鐪熷疄鎺掑悕
         if index == len(display_list) - 1 and rankId and rankId > rank_length:
             current_display_rank = rankId
 
@@ -405,7 +400,7 @@ async def draw_rank_img(
         else:
             draw_rank_id(current_display_rank, size=(50, 50), draw=(24, 24), dest=(40, 30))
 
-        # uid (高亮自己)
+        # uid (楂樹寒鑷繁)
         uid_color = "white"
         if self_uid and rank.uid == self_uid:
             uid_color = RED
@@ -414,11 +409,10 @@ async def draw_rank_img(
             (210, 75), f"{hide_uid(rank.uid)}", uid_color, waves_font_20, "lm"
         )
 
-        # 贴到背景
+        # 璐村埌鑳屾櫙
         card_img.paste(bar_bg, (0, title_h + index * bar_star_h), bar_bg)
 
-        # 累计分数（仅限参与平均计算的，即Top20）
-        if index < calc_avg_num:
+        # 绱鍒嗘暟锛堜粎闄愬弬涓庡钩鍧囪绠楃殑锛屽嵆Top20锛?        if index < calc_avg_num:
             total_score += rank.score
             total_damage += rank.expected_damage_int
 
@@ -430,37 +424,37 @@ async def draw_rank_img(
     # logo
     title.alpha_composite(logo_img.copy(), dest=(50, 65))
 
-    # 人物bg
+    # 浜虹墿bg
     pile = await get_role_pile_old(char_id, custom=True)
     title.paste(pile, (450, -120), pile)
     title_draw.text((200, 335), f"{avg_score}", "white", waves_font_44, "mm")
-    title_draw.text((200, 375), "平均声骸分数", SPECIAL_GOLD, waves_font_20, "mm")
+    title_draw.text((200, 375), "骞冲潎澹伴鍒嗘暟", SPECIAL_GOLD, waves_font_20, "mm")
 
-    if damage_title != "无":
+    if damage_title != "鏃?:
         title_draw.text((390, 335), f"{avg_damage}", "white", waves_font_44, "mm")
-        title_draw.text((390, 375), "平均伤害", SPECIAL_GOLD, waves_font_20, "mm")
+        title_draw.text((390, 375), "骞冲潎浼ゅ", SPECIAL_GOLD, waves_font_20, "mm")
 
     if char_id in SPECIAL_CHAR_NAME:
         char_name = SPECIAL_CHAR_NAME[char_id]
 
-    title_name = f"{char_name}{rank_type}群排行"
+    title_name = f"{char_name}{rank_type}缇ゆ帓琛?
     title_draw.text((140, 265), f"{title_name}", "black", waves_font_30, "lm")
 
-    # 备注
-    rank_row_title = "入榜条件"
-    rank_row = f"1.本群内使用命令【{PREFIX}刷新面板】刷新过面板"
+    # 澶囨敞
+    rank_row_title = "鍏ユ鏉′欢"
+    rank_row = f"1.鏈兢鍐呬娇鐢ㄥ懡浠ゃ€恵PREFIX}鍒锋柊闈㈡澘銆戝埛鏂拌繃闈㈡澘"
     title_draw.text((20, 420), f"{rank_row_title}", SPECIAL_GOLD, waves_font_16, "lm")
     title_draw.text((90, 420), f"{rank_row}", GREY, waves_font_16, "lm")
     if tokenLimitFlag:
-        rank_row = f"2.使用命令【{PREFIX}登录】登录过的用户"
+        rank_row = f"2.浣跨敤鍛戒护銆恵PREFIX}鐧诲綍銆戠櫥褰曡繃鐨勭敤鎴?
         title_draw.text((90, 438), f"{rank_row}", GREY, waves_font_16, "lm")
 
-    if rank_type == "伤害":
+    if rank_type == "浼ゅ":
         temp_notes = (
-            "排行标准：以期望伤害（计算暴击率的伤害，不代表实际伤害) 为排序的排名"
+            "鎺掕鏍囧噯锛氫互鏈熸湜浼ゅ锛堣绠楁毚鍑荤巼鐨勪激瀹筹紝涓嶄唬琛ㄥ疄闄呬激瀹? 涓烘帓搴忕殑鎺掑悕"
         )
     else:
-        temp_notes = "排行标准：以声骸分数（声骸评分高，不代表实际伤害高) 为排序的排名"
+        temp_notes = "鎺掕鏍囧噯锛氫互澹伴鍒嗘暟锛堝０楠歌瘎鍒嗛珮锛屼笉浠ｈ〃瀹為檯浼ゅ楂? 涓烘帓搴忕殑鎺掑悕"
     card_img_draw.text((450, 500), f"{temp_notes}", SPECIAL_GOLD, waves_font_16, "lm")
 
     img_temp = Image.new("RGBA", char_mask.size)
