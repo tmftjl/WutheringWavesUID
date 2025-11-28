@@ -86,12 +86,16 @@ def db_row_to_rank_info(row: WavesRoleData, qid: str) -> RankInfo:
     """将数据库行数据转换为 RankInfo 对象"""
     role_detail = RoleDetailData.parse_obj(row.data)
     sonata_name = ""
+    
     calc_temp = get_calc_map({}, role_detail.role.roleName, role_detail.role.roleId)
+    
+    # 如果有声骸数据，进行完整计算并更新 calc_temp
     if role_detail.phantomData and role_detail.phantomData.equipPhantomList:
         calc = WuWaCalc(role_detail)
         calc.phantom_pre = calc.prepare_phantom()
         phantom_card = calc.enhance_summation_phantom_value(calc.phantom_pre)
         calc_temp = get_calc_map(phantom_card, role_detail.role.roleName, role_detail.role.roleId)
+        
         ph_detail = phantom_card.get("ph_detail", [])
         for ph in ph_detail:
             if ph.get("ph_num") == 5 or ph.get("isFull"):
@@ -99,7 +103,7 @@ def db_row_to_rank_info(row: WavesRoleData, qid: str) -> RankInfo:
                 break
 
     # 获取评分背景 (S/A/B/C)
-    score_bg = get_total_score_bg(role_detail.role.roleName, row.score, {})
+    score_bg = get_total_score_bg(role_detail.role.roleName, row.score, calc_temp)
 
     return RankInfo(
         roleDetail=role_detail,
