@@ -71,6 +71,9 @@ async def draw_group_rank(bot: Bot, ev: Event) -> Union[str, bytes]:
                     all_uids.append(uid)
                     uid_to_user_id[uid] = bind.user_id
 
+    # Ensure the current viewer sees their own avatar for their UID
+    if self_uid:
+        uid_to_user_id[str(self_uid)] = str(ev.user_id)
     if not all_uids:
         return "群内暂无用户绑定UID"
 

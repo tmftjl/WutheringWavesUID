@@ -212,6 +212,9 @@ async def draw_rank_img(
     # 获取自己的 UID
     self_uid = await WavesBind.get_uid_by_game(ev.user_id, ev.bot_id)
 
+    # Ensure the current viewer sees their own avatar for their UID
+    if self_uid:
+        uid_map[str(self_uid)] = str(ev.user_id)
     # 数据库直接获取排序好的数据
     db_rank_type = "damage" if rank_type == "伤害" else "score"
     all_rows = await WavesRoleData.get_group_all_data(

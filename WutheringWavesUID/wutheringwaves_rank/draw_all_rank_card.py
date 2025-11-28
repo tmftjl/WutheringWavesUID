@@ -223,6 +223,9 @@ async def draw_all_rank_card(
                 if uid:
                     uid_to_user_id[uid] = bind.user_id
 
+    # Ensure the current viewer sees their own avatar in the list for their UID
+    if target_uid:
+        uid_to_user_id[str(target_uid)] = str(ev.user_id)
     # 调用新接口获取排行数据
     rank_result = await WavesRoleData.get_role_rank_data(
         role_id=str(find_char_id),

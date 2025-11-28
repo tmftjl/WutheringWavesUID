@@ -101,6 +101,9 @@ async def draw_total_rank(bot: Bot, ev: Event) -> Union[str, bytes]:
                 if uid:
                     uid_to_user_id[uid] = bind.user_id
 
+    # Ensure the viewer sees their own avatar for their UID when multiple users share the same UID
+    if target_uid:
+        uid_to_user_id[str(target_uid)] = str(ev.user_id)
     rankInfoList = []
     
     # 添加榜单列表 (Top N)
