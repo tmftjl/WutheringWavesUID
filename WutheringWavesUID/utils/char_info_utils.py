@@ -1,5 +1,5 @@
 import json
-from typing import Any, Dict, Generator, List, Union
+from typing import Any, Dict, Generator, List, Union, Optional
 
 import aiofiles
 
