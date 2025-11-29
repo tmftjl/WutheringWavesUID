@@ -59,7 +59,7 @@ async def draw_group_rank(bot: Bot, ev: Event) -> Union[str, bytes]:
     # 获取群内所有绑定的UID
     group_binds = await WavesBind.get_group_all_uid(ev.group_id)
     if not group_binds:
-        return "群内暂无用户绑定UID"
+        return "群内暂无用户登录"
 
     # 收集所有UID
     all_uids = []
@@ -75,7 +75,7 @@ async def draw_group_rank(bot: Bot, ev: Event) -> Union[str, bytes]:
     if self_uid:
         uid_to_user_id[str(self_uid)] = str(ev.user_id)
     if not all_uids:
-        return "群内暂无用户绑定UID"
+        return "群内暂无用户登录"
 
     # 获取所有角色数据
     all_roles = await WavesRoleData.get_all_roles_by_uid_list(all_uids)

@@ -131,7 +131,6 @@ async def auto_delete_all_invalid_cookie():
 
 @waves_bind_uid.on_command(
     (
-        "绑定",
         "切换",
         "删除全部特征码",
         "删除全部UID",
@@ -175,7 +174,7 @@ async def send_waves_bind_uid_msg(bot: Bot, ev: Event):
             },
             at_sender=at_sender,
         )
-    elif "切换" in ev.command:
+    if "切换" in ev.command:
         retcode = await WavesBind.switch_uid_by_game(qid, ev.bot_id, uid)
         if retcode == 0:
             uid_list = await WavesBind.get_uid_list_by_game(qid, ev.bot_id)

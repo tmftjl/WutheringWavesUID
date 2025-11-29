@@ -22,7 +22,7 @@ async def send_config_ev(bot: Bot, ev: Event):
     uid = await WavesBind.get_uid_by_game(ev.user_id, ev.bot_id)
     if uid is None:
         return await bot.send(
-            f"您还未绑定鸣潮特征码, 请使用【{PREFIX}绑定uid】 完成绑定！\n", at_sender
+            f"您还未绑定鸣潮token或者您的鸣潮token已失效！\n请使用【{PREFIX}登录】完成绑定！\n", at_sender
         )
 
     if "体力背景" in ev.text:
