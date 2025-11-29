@@ -302,7 +302,7 @@ async def draw_endless_rank_img(bot: Bot, ev: Event) -> Union[str, bytes]:
     draw.text((img_width // 2, 80), "海蚀无尽排行", "white", waves_font_40, "mm")
     draw.text(
         (img_width // 2, 125),
-        "数据来源: 千咲 · 群内排行",
+        "数据来源: 千咲 · 群内排行（使用ww无尽上传后可加入排行）",
         SPECIAL_GOLD,
         waves_font_20,
         "mm",
