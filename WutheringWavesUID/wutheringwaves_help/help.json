@@ -266,26 +266,10 @@
         "need_admin": false
       },
       {
-        "name": "深塔出场率",
-        "desc": "深塔出场率",
-        "eg": "深塔出场率",
-        "need_ck": false,
-        "need_sk": false,
-        "need_admin": false
-      },
-      {
         "name": "冥歌海墟",
         "desc": "查询冥歌海墟",
         "eg": "mh/冥歌海墟",
         "need_ck": true,
-        "need_sk": false,
-        "need_admin": false
-      },
-      {
-        "name": "冥歌海墟出场率",
-        "desc": "冥歌海墟出场率",
-        "eg": "冥海出场率",
-        "need_ck": false,
         "need_sk": false,
         "need_admin": false
       }
@@ -313,7 +297,7 @@
       {
         "name": "全服伤害排行",
         "desc": "全服伤害排行",
-        "eg": "长离总排行1",
+        "eg": "长离总排行",
         "need_ck": false,
         "need_sk": false,
         "need_admin": false
@@ -321,7 +305,7 @@
       {
         "name": "全服评分排行",
         "desc": "全服评分排行",
-        "eg": "长离评分总排行1",
+        "eg": "长离评分总排行",
         "need_ck": false,
         "need_sk": false,
         "need_admin": false
@@ -335,17 +319,17 @@
         "need_admin": false
       },
       {
-        "name": "无尽bot排行",
-        "desc": "无尽bot排行",
-        "eg": "无尽bot排行",
+        "name": "无尽总排行",
+        "desc": "无尽总排行",
+        "eg": "无尽总排行",
         "need_ck": false,
         "need_sk": false,
         "need_admin": false
       },
       {
-        "name": "无尽总排行",
-        "desc": "无尽总排行",
-        "eg": "无尽总排行",
+        "name": "练度总排行",
+        "desc": "练度总排行",
+        "eg": "练度总排行",
         "need_ck": false,
         "need_sk": false,
         "need_admin": false
@@ -578,7 +562,7 @@
   "机器人拉群": {
     "desc": "机器人拉群",
     "data": [
-       {
+      {
         "name": "会员帮助",
         "desc": "会员帮助",
         "eg": "会员帮助",
