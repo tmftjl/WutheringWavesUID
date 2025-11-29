@@ -86,10 +86,16 @@ def db_row_to_rank_info(row: WavesRoleData, qid: str) -> RankInfo:
     """将数据库行数据转换为 RankInfo 对象"""
     role_detail = RoleDetailData.parse_obj(row.data)
     sonata_name = ""
+    
+    calc_temp = get_calc_map({}, role_detail.role.roleName, role_detail.role.roleId)
+    
+    # 如果有声骸数据，进行完整计算并更新 calc_temp
     if role_detail.phantomData and role_detail.phantomData.equipPhantomList:
         calc = WuWaCalc(role_detail)
         calc.phantom_pre = calc.prepare_phantom()
         phantom_card = calc.enhance_summation_phantom_value(calc.phantom_pre)
+        calc_temp = get_calc_map(phantom_card, role_detail.role.roleName, role_detail.role.roleId)
+        
         ph_detail = phantom_card.get("ph_detail", [])
         for ph in ph_detail:
             if ph.get("ph_num") == 5 or ph.get("isFull"):
@@ -97,7 +103,7 @@ def db_row_to_rank_info(row: WavesRoleData, qid: str) -> RankInfo:
                 break
 
     # 获取评分背景 (S/A/B/C)
-    score_bg = get_total_score_bg(role_detail.role.roleName, row.score, {})
+    score_bg = get_total_score_bg(role_detail.role.roleName, row.score, calc_temp)
 
     return RankInfo(
         roleDetail=role_detail,
@@ -153,8 +159,10 @@ async def draw_rank_img(
 
     rankDetail = DamageRankRegister.find_class(char_id)
     if not rankDetail and rank_type == "伤害":
+        # 伤害标题（若角色未支持伤害计算则显示 "无"）
         return f"[鸣潮] 角色【{char_name}排行】暂未适配伤害计算，请等待作者更新！\n"
-
+    
+    damage_title = (rankDetail and rankDetail.get("title")) or "无"
     if char_id in SPECIAL_CHAR:
         find_char_id = SPECIAL_CHAR[char_id]
     else:
@@ -162,25 +170,51 @@ async def draw_rank_img(
 
     start_time = time.time()
     logger.info(f"[draw_rank_img] start processing for group: {ev.group_id}")
+    
     # 获取群里的所有拥有该角色人的数据
     users = await WavesBind.get_group_all_uid(ev.group_id)
-    tokenLimitFlag, wavesTokenUsersMap = await get_waves_token_condition(ev)
-
+    
     if not users:
         msg = []
         msg.append(f"[鸣潮] 群【{ev.group_id}】暂无【{char}】面板")
         msg.append(f"请使用【{PREFIX}刷新面板】后再使用此功能！")
-        if tokenLimitFlag:
-            msg.append(
-                f"当前排行开启了登录验证，请使用命令【{PREFIX}登录】登录后此功能！"
-            )
         msg.append("")
         return "\n".join(msg)
-    uid_list = [user.uid for user in users]
+
+    tokenLimitFlag, wavesTokenUsersMap = await get_waves_token_condition(ev)
+    
+    # 构建 uid -> qid(平台用户id) 映射，并在需要时按有效 ck 过滤
+    uid_map = {}
+    for bind in users:
+        if not bind.uid:
+            continue
+        for _uid in str(bind.uid).split('_'):
+            _uid = _uid.strip()
+            if not _uid:
+                continue
+            if tokenLimitFlag:
+                # 仅保留拥有有效 cookie 的 (user_id, uid)
+                if (bind.user_id, _uid) not in wavesTokenUsersMap or not wavesTokenUsersMap.get((bind.user_id, _uid)):
+                    continue
+            uid_map[_uid] = bind.user_id
+
+    uid_list = list(uid_map.keys())
+
+    if not uid_list:
+        msg = []
+        msg.append(f"[鸣潮] 群【{ev.group_id}】暂无【{char}】有效数据")
+        msg.append(f"请使用【{PREFIX}刷新面板】后再使用此功能！")
+        if tokenLimitFlag:
+            msg.append(f"当前排行开启了登录验证，请使用命令【{PREFIX}登录】登录后使用此功能！")
+        msg.append("")
+        return "\n".join(msg)
+
     # 获取自己的 UID
-    self_uid = None
     self_uid = await WavesBind.get_uid_by_game(ev.user_id, ev.bot_id)
 
+    # Ensure the current viewer sees their own avatar for their UID
+    if self_uid:
+        uid_map[str(self_uid)] = str(ev.user_id)
     # 数据库直接获取排序好的数据
     db_rank_type = "damage" if rank_type == "伤害" else "score"
     all_rows = await WavesRoleData.get_group_all_data(
@@ -191,9 +225,12 @@ async def draw_rank_img(
 
     if not all_rows:
         msg = []
-        msg.append(f"[鸣潮] 群【{ev.group_id}】暂无【{char}】面板")
-        msg.append(f"请使用【{PREFIX}刷新面板】后再使用此功能！")
+        msg.append(f"[鸣潮] 群{ev.group_id}暂无 {char} 数据")
+        msg.append(f"1.请使用『{PREFIX}刷新面板』后再使用本功能")
+        if tokenLimitFlag:
+            msg.append(f"2.使用指令『{PREFIX}登录』登录后可参与")
         return "\n".join(msg)
+
 
     # 转换为 RankInfo 并处理排名
     rankInfoList = []
@@ -206,6 +243,7 @@ async def draw_rank_img(
         rankInfoList.append(rank_info)
         if self_uid and row.uid == self_uid:
             self_real_index = len(rankInfoList) - 1
+            
     display_list = rankInfoList[:rank_length]
 
     rankId = None
@@ -300,38 +338,38 @@ async def draw_rank_img(
         # 武器
         weapon_bg_temp = Image.new("RGBA", (600, 300))
         weaponData: WeaponData = rank_role_detail.weaponData
-        weapon_icon = await get_square_weapon(weaponData.weapon.weaponId)
-        weapon_icon = crop_center_img(weapon_icon, 110, 110)
-        weapon_icon_bg = get_weapon_icon_bg(weaponData.weapon.weaponStarLevel)
-        weapon_icon_bg.paste(weapon_icon, (10, 20), weapon_icon)
-
-        weapon_bg_temp_draw = ImageDraw.Draw(weapon_bg_temp)
-        weapon_bg_temp_draw.text(
-            (200, 30),
-            f"{weaponData.weapon.weaponName}",
-            SPECIAL_GOLD,
-            waves_font_40,
-            "lm",
-        )
-        weapon_bg_temp_draw.text(
-            (203, 75), f"Lv.{weaponData.level}/90", "white", waves_font_30, "lm"
-        )
-
-        _x = 220
-        _y = 120
-        wrc_fill = WEAPON_RESONLEVEL_COLOR[weaponData.resonLevel or 0] + (
-            int(0.8 * 255),
-        )
-        weapon_bg_temp_draw.rounded_rectangle(
-            [_x - 15, _y - 15, _x + 50, _y + 15], radius=7, fill=wrc_fill
-        )
-        weapon_bg_temp_draw.text(
-            (_x, _y), f"精{weaponData.resonLevel}", "white", waves_font_24, "lm"
-        )
-
-        weapon_bg_temp.alpha_composite(weapon_icon_bg, dest=(45, 0))
-
-        bar_bg.alpha_composite(weapon_bg_temp.resize((260, 130)), dest=(580, 25))
+        if weaponData and weaponData.weapon:
+             weapon_icon = await get_square_weapon(weaponData.weapon.weaponId)
+             weapon_icon = crop_center_img(weapon_icon, 110, 110)
+             weapon_icon_bg = get_weapon_icon_bg(weaponData.weapon.weaponStarLevel)
+             weapon_icon_bg.paste(weapon_icon, (10, 20), weapon_icon)
+     
+             weapon_bg_temp_draw = ImageDraw.Draw(weapon_bg_temp)
+             weapon_bg_temp_draw.text(
+                 (200, 30),
+                 f"{weaponData.weapon.weaponName}",
+                 SPECIAL_GOLD,
+                 waves_font_40,
+                 "lm",
+             )
+             weapon_bg_temp_draw.text(
+                 (203, 75), f"Lv.{weaponData.level}/90", "white", waves_font_30, "lm"
+             )
+     
+             _x = 220
+             _y = 120
+             wrc_fill = WEAPON_RESONLEVEL_COLOR[weaponData.resonLevel or 0] + (
+                 int(0.8 * 255),
+             )
+             weapon_bg_temp_draw.rounded_rectangle(
+                 [_x - 15, _y - 15, _x + 50, _y + 15], radius=7, fill=wrc_fill
+             )
+             weapon_bg_temp_draw.text(
+                 (_x, _y), f"精{weaponData.resonLevel}", "white", waves_font_24, "lm"
+             )
+     
+             weapon_bg_temp.alpha_composite(weapon_icon_bg, dest=(45, 0))
+             bar_bg.alpha_composite(weapon_bg_temp.resize((260, 130)), dest=(580, 25))
 
         # 伤害
         if damage_title == "无":

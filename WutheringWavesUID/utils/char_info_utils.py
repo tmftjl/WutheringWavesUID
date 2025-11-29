@@ -1,5 +1,5 @@
 import json
-from typing import Any, Dict, Generator, List, Union
+from typing import Any, Dict, Generator, List, Union, Optional
 
 import aiofiles
 
@@ -12,17 +12,29 @@ from .database.models import WavesRoleData
 
 async def get_all_role_detail_info_list(
     uid: str,
-) -> Union[List[RoleDetailData], None]:
-    """从数据库获取所有角色详细信息，如果数据库为空则尝试从JSON文件迁移"""
-    role_data_list = await WavesRoleData.get_role_data_by_uid(uid)
-    # 将数据库中的数据转换为 RoleDetailData 对象
+) -> Optional[List[RoleDetailData]]: 
+    """从数据库获取所有角色详细信息，如果是极限面板(uid='1')则从JSON文件获取"""
     result = []
-    for role_data in role_data_list:
-        if role_data.data:
+    if uid == "1":
+        path = PLAYER_PATH / uid / "rawData.json"
+        if path.exists():
             try:
-                result.append(RoleDetailData(**role_data.data))
+                async with aiofiles.open(path, mode="r", encoding="utf-8") as f:
+                    content = await f.read()
+                    json_data = json.loads(content)
+                result = [RoleDetailData.model_validate(r) for r in json_data]
             except Exception as e:
-                logger.exception(f"解析角色数据失败 uid={uid}, role_id={role_data.role_id}:", e)
+                logger.error(f"读取极限面板数据失败: {e}")
+                return None
+    else:
+        try:
+            role_data_list = await WavesRoleData.get_role_data_by_uid(uid)
+            for role_data in role_data_list:
+                if role_data.data:
+                    result.append(RoleDetailData.model_validate(role_data.data))
+        except Exception as e:
+            logger.error(f"查询数据库角色数据失败: {e}")
+            return None
 
     return result if result else None
 
